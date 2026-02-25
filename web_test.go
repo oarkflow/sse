@@ -140,3 +140,36 @@ func TestConnectRateLimiter(t *testing.T) {
 		t.Fatal("third connect should be rate-limited")
 	}
 }
+
+func TestConnectRateLimiterCleanup(t *testing.T) {
+	limiter := newConnectRateLimiter(1, time.Millisecond)
+	limiter.mu.Lock()
+	limiter.entries["10.0.0.1"] = connectWindow{start: time.Now().Add(-time.Second), count: 1}
+	limiter.mu.Unlock()
+
+	if !limiter.Allow("10.0.0.2") {
+		t.Fatal("expected allow on fresh IP")
+	}
+
+	limiter.mu.Lock()
+	_, exists := limiter.entries["10.0.0.1"]
+	limiter.mu.Unlock()
+	if exists {
+		t.Fatal("expected stale IP entry to be cleaned up")
+	}
+}
+
+func TestIsTLSRequestValues(t *testing.T) {
+	if !isTLSRequestValues("https", "", "", false) {
+		t.Fatal("https protocol should be treated as tls")
+	}
+	if !isTLSRequestValues("http", "https", "", false) {
+		t.Fatal("x-forwarded-proto=https should be treated as tls")
+	}
+	if isTLSRequestValues("http", "", "8.8.8.8", false) {
+		t.Fatal("plain http remote should be rejected")
+	}
+	if !isTLSRequestValues("http", "", "127.0.0.1", true) {
+		t.Fatal("localhost should be allowed when local insecure enabled")
+	}
+}

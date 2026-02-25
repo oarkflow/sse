@@ -2,6 +2,7 @@ package sse
 
 import (
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -33,6 +34,8 @@ type Client struct {
 
 	// LastEventID is the ID of the last event the client acknowledged.
 	LastEventID string
+
+	droppedConsecutive atomic.Uint64
 }
 
 // ClientOptions configures a new Client.

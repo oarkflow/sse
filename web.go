@@ -92,10 +92,18 @@ type HandlerOptions struct {
 	RequireTLS          bool
 	AllowLocalInsecure  bool
 
+	// ConnectionLimiter optionally overrides in-process per-IP connection limiting.
+	// If nil, the built-in local limiter is used.
+	ConnectionLimiter ConnectionLimiter
+
 	IPFromCtx func(ctx fiber.Ctx) string
 
 	Logger  *slog.Logger
 	Metrics *HandlerMetrics
+
+	// StreamErrorLogInterval rate-limits stream I/O error log lines.
+	// Set to 0 to disable rate limiting.
+	StreamErrorLogInterval time.Duration
 }
 
 // Handler returns a GoFiber handler that upgrades the connection to SSE.
@@ -143,8 +151,14 @@ func buildSSEHandler(
 	}
 
 	allowedOrigins, wildcardOrigin := compileAllowedOrigins(opts.AllowedOrigins)
-	ipLimiter := newIPConnLimiter(opts.MaxConnectionsPerIP)
+	var ipLimiter ConnectionLimiter
+	if opts.ConnectionLimiter != nil {
+		ipLimiter = opts.ConnectionLimiter
+	} else {
+		ipLimiter = newIPConnLimiter(opts.MaxConnectionsPerIP)
+	}
 	rateLimiter := newConnectRateLimiter(opts.MaxConnectsPerIP, opts.ConnectRateWindow)
+	streamErrLimiter := newLogRateLimiter(opts.StreamErrorLogInterval)
 
 	return func(ctx fiber.Ctx) error {
 		origin := strings.TrimSpace(ctx.Get("Origin"))
@@ -239,6 +253,9 @@ func buildSSEHandler(
 			if errors.Is(err, ErrMaxClientsReached) || errors.Is(err, ErrHubDraining) {
 				status = fiber.StatusTooManyRequests
 			}
+			if errors.Is(err, ErrInvalidTopic) {
+				status = fiber.StatusBadRequest
+			}
 			logger.Warn("sse connection rejected: unable to register client",
 				"client_id", client.ID, "user_id", client.UserID, "ip", clientIP, "error", err.Error())
 			return ctx.Status(status).SendString(err.Error())
@@ -297,17 +314,17 @@ func buildSSEHandler(
 			for event := range client.send {
 				if event.Type == "" && event.Data != "" {
 					if _, err := w.WriteString(event.Data); err != nil {
-						recordStreamError(opts.Metrics, logger, client.ID, err)
+						recordStreamError(opts.Metrics, logger, streamErrLimiter, client.ID, err)
 						return
 					}
 				} else {
 					if _, err := w.Write(event.Encode()); err != nil {
-						recordStreamError(opts.Metrics, logger, client.ID, err)
+						recordStreamError(opts.Metrics, logger, streamErrLimiter, client.ID, err)
 						return
 					}
 				}
 				if err := w.Flush(); err != nil {
-					recordStreamError(opts.Metrics, logger, client.ID, err)
+					recordStreamError(opts.Metrics, logger, streamErrLimiter, client.ID, err)
 					return
 				}
 			}
@@ -317,11 +334,13 @@ func buildSSEHandler(
 	}
 }
 
-func recordStreamError(metrics *HandlerMetrics, logger *slog.Logger, clientID string, err error) {
+func recordStreamError(metrics *HandlerMetrics, logger *slog.Logger, limiter *logRateLimiter, clientID string, err error) {
 	if metrics != nil {
 		metrics.StreamErrors.Add(1)
 	}
-	logger.Warn("sse stream io failed", "client_id", clientID, "error", err.Error())
+	if limiter.Allow() {
+		logger.Warn("sse stream io failed", "client_id", clientID, "error", err.Error())
+	}
 }
 
 func runAuth(ctx fiber.Ctx, opts HandlerOptions) (*AuthResult, error) {
@@ -404,17 +423,21 @@ func normalizeOrigin(origin string) string {
 }
 
 func isTLSRequest(ctx fiber.Ctx, allowLocalInsecure bool) bool {
-	if strings.EqualFold(ctx.Protocol(), "https") {
+	return isTLSRequestValues(ctx.Protocol(), ctx.Get("X-Forwarded-Proto"), ctx.IP(), allowLocalInsecure)
+}
+
+func isTLSRequestValues(protocol, forwardedProto, ip string, allowLocalInsecure bool) bool {
+	if strings.EqualFold(protocol, "https") {
 		return true
 	}
-	if strings.EqualFold(ctx.Get("X-Forwarded-Proto"), "https") {
+	if strings.EqualFold(forwardedProto, "https") {
 		return true
 	}
 	if !allowLocalInsecure {
 		return false
 	}
-	ip := strings.TrimSpace(ctx.IP())
-	return ip == "127.0.0.1" || ip == "::1" || ip == "localhost"
+	normalizedIP := strings.TrimSpace(ip)
+	return normalizedIP == "127.0.0.1" || normalizedIP == "::1" || normalizedIP == "localhost"
 }
 
 type ipConnLimiter struct {
@@ -465,6 +488,7 @@ type connectRateLimiter struct {
 
 	mu      sync.Mutex
 	entries map[string]connectWindow
+	lastGC  time.Time
 }
 
 type connectWindow struct {
@@ -483,6 +507,22 @@ func newConnectRateLimiter(maxPerWindow int, window time.Duration) *connectRateL
 	}
 }
 
+// cleanup removes expired entries from the map.
+func (l *connectRateLimiter) cleanup() {
+	now := time.Now()
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for ip, entry := range l.entries {
+		if now.Sub(entry.start) >= l.window {
+			delete(l.entries, ip)
+		}
+	}
+}
+
+// Stop is retained for backward compatibility.
+func (l *connectRateLimiter) Stop() {
+}
+
 func (l *connectRateLimiter) Allow(ip string) bool {
 	if l.maxPerWindow <= 0 {
 		return true
@@ -490,6 +530,10 @@ func (l *connectRateLimiter) Allow(ip string) bool {
 	now := time.Now()
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if l.lastGC.IsZero() || now.Sub(l.lastGC) >= l.window {
+		l.cleanupLocked(now)
+		l.lastGC = now
+	}
 
 	entry := l.entries[ip]
 	if entry.start.IsZero() || now.Sub(entry.start) >= l.window {
@@ -502,4 +546,12 @@ func (l *connectRateLimiter) Allow(ip string) bool {
 	entry.count++
 	l.entries[ip] = entry
 	return true
+}
+
+func (l *connectRateLimiter) cleanupLocked(now time.Time) {
+	for ip, entry := range l.entries {
+		if now.Sub(entry.start) >= l.window {
+			delete(l.entries, ip)
+		}
+	}
 }

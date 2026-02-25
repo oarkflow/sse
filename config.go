@@ -28,6 +28,18 @@ func ValidateHubOptions(opts HubOptions) error {
 	if opts.MaxEventTypeLength < 0 {
 		return fmt.Errorf("max event type length must be >= 0")
 	}
+	if opts.MaxTopicLength < 0 {
+		return fmt.Errorf("max topic length must be >= 0")
+	}
+	if opts.MaxGroupLength < 0 {
+		return fmt.Errorf("max group length must be >= 0")
+	}
+	if opts.MaxDropsPerClient < 0 {
+		return fmt.Errorf("max drops per client must be >= 0")
+	}
+	if opts.SlowConsumerLogInterval < 0 {
+		return fmt.Errorf("slow consumer log interval must be >= 0")
+	}
 	if opts.BackpressurePolicy != "" &&
 		opts.BackpressurePolicy != BackpressureDropNewest &&
 		opts.BackpressurePolicy != BackpressureDropOldest &&
@@ -53,6 +65,9 @@ func ValidateHandlerOptions(opts HandlerOptions) error {
 	}
 	if opts.ConnectRateWindow < 0 {
 		return fmt.Errorf("connect rate window must be >= 0")
+	}
+	if opts.StreamErrorLogInterval < 0 {
+		return fmt.Errorf("stream error log interval must be >= 0")
 	}
 	return nil
 }

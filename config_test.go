@@ -25,6 +25,12 @@ func TestValidateHubOptions(t *testing.T) {
 	}); err == nil {
 		t.Fatal("expected max event bytes validation error")
 	}
+
+	if err := ValidateHubOptions(HubOptions{
+		MaxDropsPerClient: -1,
+	}); err == nil {
+		t.Fatal("expected max drops per client validation error")
+	}
 }
 
 func TestValidateHandlerOptions(t *testing.T) {
@@ -47,5 +53,11 @@ func TestValidateHandlerOptions(t *testing.T) {
 		ConnectRateWindow: -time.Second,
 	}); err == nil {
 		t.Fatal("expected connect rate window validation error")
+	}
+
+	if err := ValidateHandlerOptions(HandlerOptions{
+		StreamErrorLogInterval: -time.Second,
+	}); err == nil {
+		t.Fatal("expected stream error log interval validation error")
 	}
 }

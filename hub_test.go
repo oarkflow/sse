@@ -1,6 +1,7 @@
 package sse
 
 import (
+	"errors"
 	"testing"
 	"time"
 )
@@ -318,6 +319,27 @@ func TestAddClientWhileDraining(t *testing.T) {
 	}
 }
 
+func TestAddClientDuplicateID(t *testing.T) {
+	hub := newTestHub()
+	defer hub.Stop()
+
+	if err := hub.AddClient(newTestClient("dup")); err != nil {
+		t.Fatalf("unexpected first add error: %v", err)
+	}
+	if err := hub.AddClient(newTestClient("dup")); err != ErrClientAlreadyExists {
+		t.Fatalf("expected ErrClientAlreadyExists, got %v", err)
+	}
+}
+
+func TestJoinGroupClientNotFound(t *testing.T) {
+	hub := newTestHub()
+	defer hub.Stop()
+
+	if err := hub.JoinGroup("missing", "room-a"); err != ErrClientNotFound {
+		t.Fatalf("expected ErrClientNotFound, got %v", err)
+	}
+}
+
 func TestMaxGroupsPerClient(t *testing.T) {
 	hub := NewHub(HubOptions{
 		MaxGroupsPerClient: 2,
@@ -383,5 +405,114 @@ func TestEventValidationLimits(t *testing.T) {
 	}
 	if err := hub.ValidateEvent(NewEvent("ok", "12345")); err != ErrEventTooLarge {
 		t.Fatalf("expected ErrEventTooLarge, got %v", err)
+	}
+}
+
+func TestJoinGroupRejectsInvalidGroup(t *testing.T) {
+	hub := newTestHub()
+	defer hub.Stop()
+	c := newTestClient("c1")
+	_ = hub.AddClient(c)
+
+	if err := hub.JoinGroup("c1", "invalid group name"); err != ErrInvalidGroup {
+		t.Fatalf("expected ErrInvalidGroup, got %v", err)
+	}
+}
+
+func TestValidateEventRejectsInvalidTopic(t *testing.T) {
+	hub := newTestHub()
+	defer hub.Stop()
+
+	if err := hub.ValidateEvent(NewEvent("t", "d").WithTopic("bad topic")); err != ErrInvalidTopic {
+		t.Fatalf("expected ErrInvalidTopic, got %v", err)
+	}
+}
+
+func TestAuthorizePublish(t *testing.T) {
+	hub := NewHub(HubOptions{
+		HeartbeatInterval: 0,
+		AuthorizePublish: func(ctx PublishContext, event *Event) error {
+			if ctx.Target == PublishTargetGroup && ctx.Group == "blocked" {
+				return errors.New("blocked by acl")
+			}
+			return nil
+		},
+	})
+	defer hub.Stop()
+
+	c := newTestClient("c1")
+	_ = hub.AddClient(c)
+	_ = hub.JoinGroup("c1", "blocked")
+	hub.SendToGroup("blocked", NewEvent("msg", "nope"))
+
+	select {
+	case <-c.Recv():
+		t.Fatal("event should have been denied")
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func TestLifecycleHooks(t *testing.T) {
+	events := make(chan HubLifecycleEvent, 8)
+	hub := NewHub(HubOptions{
+		HeartbeatInterval: 0,
+		OnLifecycle: func(e HubLifecycleEvent) {
+			events <- e
+		},
+	})
+	_ = hub.AddClient(newTestClient("c1"))
+	hub.Drain(20 * time.Millisecond)
+
+	var sawDrainStart bool
+	var sawDrainDone bool
+	var sawStopStart bool
+	var sawStopDone bool
+	timeout := time.After(500 * time.Millisecond)
+	for !(sawDrainStart && sawDrainDone && sawStopStart && sawStopDone) {
+		select {
+		case e := <-events:
+			switch e.Type {
+			case LifecycleDrainStarted:
+				sawDrainStart = true
+			case LifecycleDrainCompleted:
+				sawDrainDone = true
+			case LifecycleStopStarted:
+				sawStopStart = true
+			case LifecycleStopCompleted:
+				sawStopDone = true
+			}
+		case <-timeout:
+			t.Fatalf("missing lifecycle events drainStart=%v drainDone=%v stopStart=%v stopDone=%v",
+				sawDrainStart, sawDrainDone, sawStopStart, sawStopDone)
+		}
+	}
+}
+
+func TestMaxDropsPerClientDisconnects(t *testing.T) {
+	hub := NewHub(HubOptions{
+		HeartbeatInterval:  0,
+		ClientBufferSize:   1,
+		BackpressurePolicy: BackpressureDropNewest,
+		MaxDropsPerClient:  2,
+	})
+	defer hub.Stop()
+
+	c := NewClient(ClientOptions{ID: "slow", BufferSize: 1})
+	_ = hub.AddClient(c)
+	deadline := time.Now().Add(200 * time.Millisecond)
+	for hub.Stats().ConnectedClients != 1 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// Fill buffer and trigger consecutive drops.
+	hub.Send("slow", NewEvent("msg", "first"))
+	hub.Send("slow", NewEvent("msg", "drop1"))
+	hub.Send("slow", NewEvent("msg", "drop2"))
+	deadline = time.Now().Add(500 * time.Millisecond)
+	for hub.Stats().ConnectedClients != 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if hub.Stats().ConnectedClients != 0 {
+		t.Fatalf("expected slow client to be disconnected")
 	}
 }

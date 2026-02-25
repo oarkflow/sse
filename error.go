@@ -27,6 +27,9 @@ var (
 	// ErrClientGroupLimitExceeded is returned when a client exceeds max group membership.
 	ErrClientGroupLimitExceeded = errors.New("sse: client group limit exceeded")
 
+	// ErrClientAlreadyExists is returned when attempting to register a duplicate client ID.
+	ErrClientAlreadyExists = errors.New("sse: client already exists")
+
 	// ErrInvalidEvent is returned when an event payload is malformed.
 	ErrInvalidEvent = errors.New("sse: invalid event")
 
@@ -35,6 +38,15 @@ var (
 
 	// ErrTLSRequired is returned when secure transport is required but absent.
 	ErrTLSRequired = errors.New("sse: tls required")
+
+	// ErrInvalidTopic is returned when a topic identifier is invalid.
+	ErrInvalidTopic = errors.New("sse: invalid topic")
+
+	// ErrInvalidGroup is returned when a group identifier is invalid.
+	ErrInvalidGroup = errors.New("sse: invalid group")
+
+	// ErrPublishUnauthorized is returned when publish authorization denies an event.
+	ErrPublishUnauthorized = errors.New("sse: publish unauthorized")
 )
 
 // newID generates a short random ID for events and clients.

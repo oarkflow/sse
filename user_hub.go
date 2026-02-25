@@ -6,15 +6,22 @@ import "sync"
 // broadcast to all browser tabs / devices of a single user.
 type UserHub struct {
 	*Hub
-	mu    sync.RWMutex
-	users map[string]map[string]bool // userID -> set of clientIDs
+	mu       sync.RWMutex
+	users    map[string]map[string]bool // userID -> set of clientIDs
+	presence PresenceStore
 }
 
 // NewUserHub creates a UserHub backed by a new Hub.
 func NewUserHub(opts HubOptions) *UserHub {
+	return NewUserHubWithPresence(opts, nil)
+}
+
+// NewUserHubWithPresence creates a UserHub with optional shared presence storage.
+func NewUserHubWithPresence(opts HubOptions, presence PresenceStore) *UserHub {
 	return &UserHub{
-		Hub:   NewHub(opts),
-		users: make(map[string]map[string]bool),
+		Hub:      NewHub(opts),
+		users:    make(map[string]map[string]bool),
+		presence: presence,
 	}
 }
 
@@ -30,6 +37,9 @@ func (u *UserHub) AddClient(c *Client) error {
 		}
 		u.users[c.UserID][c.ID] = true
 		u.mu.Unlock()
+		if u.presence != nil {
+			_ = u.presence.Add(c.UserID, c.ID)
+		}
 	}
 	return nil
 }
@@ -46,6 +56,9 @@ func (u *UserHub) RemoveClient(c *Client) {
 			}
 		}
 		u.mu.Unlock()
+		if u.presence != nil {
+			_ = u.presence.Remove(c.UserID, c.ID)
+		}
 	}
 }
 
@@ -65,6 +78,11 @@ func (u *UserHub) SendToUser(userID string, e *Event) {
 
 // OnlineUsers returns a snapshot of currently connected user IDs.
 func (u *UserHub) OnlineUsers() []string {
+	if u.presence != nil {
+		if users, err := u.presence.OnlineUsers(); err == nil {
+			return users
+		}
+	}
 	u.mu.RLock()
 	defer u.mu.RUnlock()
 	users := make([]string, 0, len(u.users))
@@ -76,6 +94,11 @@ func (u *UserHub) OnlineUsers() []string {
 
 // IsOnline returns true if the user has at least one active connection.
 func (u *UserHub) IsOnline(userID string) bool {
+	if u.presence != nil {
+		if ok, err := u.presence.IsOnline(userID); err == nil {
+			return ok
+		}
+	}
 	u.mu.RLock()
 	defer u.mu.RUnlock()
 	return len(u.users[userID]) > 0
@@ -83,6 +106,11 @@ func (u *UserHub) IsOnline(userID string) bool {
 
 // ConnectionCount returns how many connections a user has open.
 func (u *UserHub) ConnectionCount(userID string) int {
+	if u.presence != nil {
+		if n, err := u.presence.ConnectionCount(userID); err == nil {
+			return n
+		}
+	}
 	u.mu.RLock()
 	defer u.mu.RUnlock()
 	return len(u.users[userID])
