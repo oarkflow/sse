@@ -1,0 +1,1577 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SSE Fiber — Live Demo</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700&family=Syne:wght@400;600;800&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg:        #080b0f;
+    --panel:     #0d1117;
+    --border:    #1c2433;
+    --border-hi: #2a3a52;
+    --text:      #c8d3e0;
+    --text-dim:  #4a5a6e;
+    --text-hi:   #e8f0f8;
+    --green:     #00e5a0;
+    --green-dim: #00804a;
+    --amber:     #ffb340;
+    --red:       #ff4d6a;
+    --blue:      #4da6ff;
+    --purple:    #9d7aff;
+    --cyan:      #00d4e8;
+    --mono:      'JetBrains Mono', monospace;
+    --sans:      'Syne', sans-serif;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 13px;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* ── Grid noise overlay ───────────────────────────────── */
+  body::before {
+    content: '';
+    position: fixed; inset: 0;
+    background-image:
+      linear-gradient(rgba(0,229,160,.02) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(0,229,160,.02) 1px, transparent 1px);
+    background-size: 40px 40px;
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  /* ── Header ──────────────────────────────────────────── */
+  header {
+    position: relative;
+    z-index: 1;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 18px 28px;
+    border-bottom: 1px solid var(--border);
+    background: linear-gradient(180deg, rgba(0,229,160,.04) 0%, transparent 100%);
+  }
+
+  .logo {
+    font-family: var(--sans);
+    font-weight: 800;
+    font-size: 20px;
+    color: var(--green);
+    letter-spacing: -0.5px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .logo-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--green);
+    box-shadow: 0 0 12px var(--green);
+    animation: pulse 2s ease-in-out infinite;
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.5; transform: scale(0.7); }
+  }
+
+  .header-meta {
+    display: flex;
+    align-items: center;
+    gap: 20px;
+  }
+
+  .status-badge {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+  }
+
+  .status-badge.connected { color: var(--green); }
+  .status-badge.disconnected { color: var(--red); }
+
+  .status-indicator {
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: currentColor;
+  }
+
+  .status-badge.connected .status-indicator {
+    box-shadow: 0 0 8px var(--green);
+    animation: pulse 2s ease-in-out infinite;
+  }
+
+  /* ── Layout ──────────────────────────────────────────── */
+  .app {
+    position: relative;
+    z-index: 1;
+    display: grid;
+    grid-template-columns: 340px 1fr;
+    grid-template-rows: auto 1fr;
+    gap: 0;
+    height: calc(100vh - 57px);
+  }
+
+  /* ── Sidebar ─────────────────────────────────────────── */
+  .sidebar {
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    grid-row: 1 / 3;
+  }
+
+  .sidebar-section {
+    border-bottom: 1px solid var(--border);
+    padding: 20px;
+  }
+
+  .section-label {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    color: var(--text-dim);
+    margin-bottom: 14px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .section-label::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: var(--border);
+  }
+
+  /* ── Connection panel ───────────────────────────────── */
+  .field-row {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-bottom: 10px;
+  }
+
+  .field-label {
+    font-size: 10px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+  }
+
+  input[type="text"] {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text-hi);
+    font-family: var(--mono);
+    font-size: 13px;
+    padding: 8px 10px;
+    border-radius: 4px;
+    outline: none;
+    width: 100%;
+    transition: border-color .2s;
+  }
+
+  input[type="text"]:focus {
+    border-color: var(--green-dim);
+  }
+
+  input[type="text"]::placeholder { color: var(--text-dim); }
+
+  /* ── Buttons ─────────────────────────────────────────── */
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 8px 14px;
+    border: 1px solid;
+    border-radius: 4px;
+    font-family: var(--mono);
+    font-size: 12px;
+    cursor: pointer;
+    transition: all .15s;
+    text-transform: uppercase;
+    letter-spacing: .5px;
+    font-weight: 500;
+  }
+
+  .btn-green {
+    background: rgba(0,229,160,.1);
+    border-color: var(--green-dim);
+    color: var(--green);
+  }
+  .btn-green:hover {
+    background: rgba(0,229,160,.2);
+    border-color: var(--green);
+    box-shadow: 0 0 16px rgba(0,229,160,.2);
+  }
+
+  .btn-red {
+    background: rgba(255,77,106,.1);
+    border-color: rgba(255,77,106,.4);
+    color: var(--red);
+  }
+  .btn-red:hover {
+    background: rgba(255,77,106,.2);
+    border-color: var(--red);
+  }
+
+  .btn-blue {
+    background: rgba(77,166,255,.08);
+    border-color: rgba(77,166,255,.3);
+    color: var(--blue);
+  }
+  .btn-blue:hover {
+    background: rgba(77,166,255,.18);
+    border-color: var(--blue);
+  }
+
+  .btn-amber {
+    background: rgba(255,179,64,.08);
+    border-color: rgba(255,179,64,.3);
+    color: var(--amber);
+  }
+  .btn-amber:hover {
+    background: rgba(255,179,64,.18);
+    border-color: var(--amber);
+  }
+
+  .btn-purple {
+    background: rgba(157,122,255,.08);
+    border-color: rgba(157,122,255,.3);
+    color: var(--purple);
+  }
+  .btn-purple:hover {
+    background: rgba(157,122,255,.18);
+    border-color: var(--purple);
+  }
+
+  .btn-cyan {
+    background: rgba(0,212,232,.08);
+    border-color: rgba(0,212,232,.3);
+    color: var(--cyan);
+  }
+  .btn-cyan:hover {
+    background: rgba(0,212,232,.18);
+    border-color: var(--cyan);
+  }
+
+  .btn:disabled {
+    opacity: .35;
+    cursor: not-allowed;
+    pointer-events: none;
+  }
+
+  .btn-row {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-top: 4px;
+  }
+
+  .btn-full { width: 100%; }
+
+  /* ── Action sections ─────────────────────────────────── */
+  .actions-scroll {
+    flex: 1;
+    overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
+  }
+
+  .action-card {
+    padding: 18px 20px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .action-title {
+    font-family: var(--sans);
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-hi);
+    margin-bottom: 4px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .tag {
+    font-family: var(--mono);
+    font-size: 9px;
+    padding: 2px 6px;
+    border-radius: 3px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    font-weight: 700;
+  }
+  .tag-green { background: rgba(0,229,160,.15); color: var(--green); }
+  .tag-blue  { background: rgba(77,166,255,.15);  color: var(--blue); }
+  .tag-amber { background: rgba(255,179,64,.15);  color: var(--amber); }
+  .tag-purple{ background: rgba(157,122,255,.15); color: var(--purple); }
+  .tag-cyan  { background: rgba(0,212,232,.15);   color: var(--cyan); }
+  .tag-red   { background: rgba(255,77,106,.15);  color: var(--red); }
+
+  .action-desc {
+    font-size: 11px;
+    color: var(--text-dim);
+    margin-bottom: 12px;
+    line-height: 1.6;
+  }
+
+  /* ── Main panel ──────────────────────────────────────── */
+  .main-top {
+    padding: 20px 24px 0;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: flex-end;
+    gap: 0;
+  }
+
+  .tab {
+    padding: 10px 18px 12px;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    color: var(--text-dim);
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    transition: all .15s;
+    margin-bottom: -1px;
+  }
+  .tab:hover { color: var(--text); }
+  .tab.active {
+    color: var(--green);
+    border-bottom-color: var(--green);
+  }
+
+  .main-content {
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* ── Event log ───────────────────────────────────────── */
+  .tab-panel {
+    display: none;
+    flex: 1;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .tab-panel.active { display: flex; }
+
+  .log-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 20px;
+    border-bottom: 1px solid var(--border);
+    background: rgba(0,0,0,.2);
+  }
+
+  .log-filters {
+    display: flex;
+    gap: 6px;
+  }
+
+  .filter-chip {
+    padding: 4px 10px;
+    border-radius: 20px;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    cursor: pointer;
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+    transition: all .15s;
+  }
+  .filter-chip.active {
+    border-color: var(--green-dim);
+    color: var(--green);
+    background: rgba(0,229,160,.08);
+  }
+
+  .log-count {
+    font-size: 11px;
+    color: var(--text-dim);
+  }
+
+  #eventLog {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px 0;
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
+  }
+
+  .log-entry {
+    display: grid;
+    grid-template-columns: 80px 110px 1fr;
+    gap: 0;
+    padding: 7px 20px;
+    border-left: 2px solid transparent;
+    transition: background .15s;
+    animation: slideIn .2s ease-out;
+  }
+
+  @keyframes slideIn {
+    from { opacity: 0; transform: translateX(-8px); }
+    to   { opacity: 1; transform: translateX(0); }
+  }
+
+  .log-entry:hover { background: rgba(255,255,255,.02); }
+
+  .log-entry.ev-connected   { border-left-color: var(--green); }
+  .log-entry.ev-broadcast   { border-left-color: var(--blue); }
+  .log-entry.ev-direct      { border-left-color: var(--amber); }
+  .log-entry.ev-user        { border-left-color: var(--purple); }
+  .log-entry.ev-group       { border-left-color: var(--cyan); }
+  .log-entry.ev-sticky      { border-left-color: var(--red); }
+  .log-entry.ev-status      { border-left-color: var(--green-dim); }
+  .log-entry.ev-system      { border-left-color: var(--text-dim); }
+
+  .log-time {
+    font-size: 11px;
+    color: var(--text-dim);
+    font-family: var(--mono);
+  }
+
+  .log-type {
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: .5px;
+  }
+
+  .log-entry.ev-connected .log-type   { color: var(--green); }
+  .log-entry.ev-broadcast .log-type   { color: var(--blue); }
+  .log-entry.ev-direct .log-type      { color: var(--amber); }
+  .log-entry.ev-user .log-type        { color: var(--purple); }
+  .log-entry.ev-group .log-type       { color: var(--cyan); }
+  .log-entry.ev-sticky .log-type      { color: var(--red); }
+  .log-entry.ev-status .log-type      { color: var(--green-dim); }
+  .log-entry.ev-system .log-type      { color: var(--text-dim); }
+
+  .log-data {
+    font-size: 12px;
+    color: var(--text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .log-empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    color: var(--text-dim);
+    gap: 10px;
+  }
+  .log-empty-icon { font-size: 36px; opacity: .3; }
+  .log-empty-text { font-size: 12px; text-transform: uppercase; letter-spacing: 2px; }
+
+  /* ── Sticky events panel ──────────────────────────────── */
+  #stickyPanel {
+    padding: 20px;
+    overflow-y: auto;
+    flex: 1;
+  }
+
+  .sticky-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+    gap: 12px;
+  }
+
+  .sticky-card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 14px;
+    animation: fadeUp .3s ease-out;
+  }
+
+  @keyframes fadeUp {
+    from { opacity: 0; transform: translateY(10px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+
+  .sticky-card-topic {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    color: var(--red);
+    margin-bottom: 6px;
+  }
+
+  .sticky-card-data {
+    font-size: 12px;
+    color: var(--text);
+    word-break: break-all;
+    line-height: 1.6;
+  }
+
+  .sticky-card-time {
+    font-size: 10px;
+    color: var(--text-dim);
+    margin-top: 8px;
+  }
+
+  /* ── Code panel ──────────────────────────────────────── */
+  #codePanel {
+    padding: 0;
+    overflow-y: auto;
+    flex: 1;
+    background: #060910;
+  }
+
+  .code-nav {
+    display: flex;
+    gap: 2px;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border);
+    flex-wrap: wrap;
+  }
+
+  .code-tab {
+    padding: 5px 12px;
+    font-size: 11px;
+    cursor: pointer;
+    border-radius: 3px;
+    color: var(--text-dim);
+    transition: all .15s;
+  }
+  .code-tab:hover { color: var(--text); background: var(--border); }
+  .code-tab.active { color: var(--green); background: rgba(0,229,160,.1); }
+
+  .code-block {
+    display: none;
+    padding: 20px 24px;
+  }
+  .code-block.active { display: block; }
+
+  pre {
+    font-family: var(--mono);
+    font-size: 12.5px;
+    line-height: 1.7;
+    color: var(--text);
+    white-space: pre;
+    overflow-x: auto;
+  }
+
+  /* Syntax highlight classes */
+  .kw  { color: #c792ea; }    /* keywords */
+  .fn  { color: #82aaff; }    /* functions */
+  .str { color: #c3e88d; }    /* strings */
+  .cm  { color: #546e7a; }    /* comments */
+  .num { color: #f78c6c; }    /* numbers */
+  .tp  { color: #ffcb6b; }    /* types */
+  .op  { color: #89ddff; }    /* operators */
+
+  /* ── Stats bar ───────────────────────────────────────── */
+  .stats-bar {
+    display: flex;
+    align-items: center;
+    gap: 24px;
+    padding: 10px 24px;
+    background: rgba(0,0,0,.3);
+    border-top: 1px solid var(--border);
+    font-size: 11px;
+  }
+
+  .stat {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--text-dim);
+  }
+
+  .stat-val {
+    color: var(--text-hi);
+    font-weight: 700;
+  }
+
+  .stat-sep {
+    width: 1px;
+    height: 14px;
+    background: var(--border);
+  }
+
+  /* ── Toast notifications ──────────────────────────────── */
+  #toastContainer {
+    position: fixed;
+    top: 70px;
+    right: 20px;
+    z-index: 9999;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    pointer-events: none;
+  }
+
+  .toast {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 12px 16px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    max-width: 300px;
+    animation: toastIn .25s ease-out;
+    pointer-events: all;
+    box-shadow: 0 4px 24px rgba(0,0,0,.5);
+  }
+
+  @keyframes toastIn {
+    from { opacity: 0; transform: translateX(20px); }
+    to   { opacity: 1; transform: translateX(0); }
+  }
+
+  .toast.out {
+    animation: toastOut .2s ease-in forwards;
+  }
+
+  @keyframes toastOut {
+    from { opacity: 1; transform: translateX(0); }
+    to   { opacity: 0; transform: translateX(20px); }
+  }
+
+  .toast-icon { font-size: 16px; flex-shrink: 0; line-height: 1; }
+
+  .toast-body {}
+  .toast-title {
+    font-family: var(--sans);
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-hi);
+    margin-bottom: 2px;
+  }
+  .toast-msg { font-size: 11px; color: var(--text-dim); line-height: 1.5; }
+
+  .toast.toast-green { border-left: 3px solid var(--green); }
+  .toast.toast-blue  { border-left: 3px solid var(--blue); }
+  .toast.toast-amber { border-left: 3px solid var(--amber); }
+  .toast.toast-red   { border-left: 3px solid var(--red); }
+
+  /* ── Scrollbars ──────────────────────────────────────── */
+  ::-webkit-scrollbar { width: 4px; height: 4px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border-hi); border-radius: 2px; }
+
+  /* ── Responsive ──────────────────────────────────────── */
+  @media (max-width: 900px) {
+    .app { grid-template-columns: 1fr; height: auto; }
+    .sidebar { grid-row: auto; border-right: none; border-bottom: 1px solid var(--border); }
+  }
+</style>
+</head>
+<body>
+
+<!-- ── Header ─────────────────────────────────────────── -->
+<header>
+  <div class="logo">
+    <div class="logo-dot"></div>
+    SSE · Fiber
+  </div>
+  <div class="header-meta">
+    <span class="status-badge disconnected" id="connStatus">
+      <span class="status-indicator"></span>
+      <span id="connLabel">Disconnected</span>
+    </span>
+    <span style="color: var(--text-dim); font-size:11px">v1.0.0</span>
+  </div>
+</header>
+
+<!-- ── App ────────────────────────────────────────────── -->
+<div class="app">
+
+  <!-- ── Sidebar ──────────────────────────────────────── -->
+  <aside class="sidebar">
+
+    <!-- Connection -->
+    <div class="sidebar-section">
+      <div class="section-label">Connection</div>
+      <div class="field-row">
+        <div class="field-label">Server URL</div>
+        <input type="text" id="serverUrl" value="http://localhost:3000" />
+      </div>
+      <div class="field-row">
+        <div class="field-label">User ID</div>
+        <input type="text" id="userId" value="alice" placeholder="alice" />
+      </div>
+      <div class="field-row">
+        <div class="field-label">Room (group)</div>
+        <input type="text" id="roomId" value="team-backend" placeholder="team-backend" />
+      </div>
+      <div class="field-row">
+        <div class="field-label">Topics (comma-separated)</div>
+        <input type="text" id="topics" value="status,orders" placeholder="status,orders" />
+      </div>
+      <div class="btn-row">
+        <button class="btn btn-green btn-full" id="connectBtn" onclick="connect()">
+          ⚡ Connect
+        </button>
+        <button class="btn btn-red" id="disconnectBtn" onclick="disconnect()" disabled style="display:none">
+          ✕ Disconnect
+        </button>
+      </div>
+      <div id="clientInfo" style="display:none; margin-top:12px; padding:10px; background:var(--bg); border:1px solid var(--border); border-radius:4px; font-size:11px; line-height:1.9; color:var(--text-dim);">
+        <div>Client ID: <span id="clientId" style="color:var(--green); word-break:break-all"></span></div>
+        <div>User: <span id="displayUser" style="color:var(--amber)"></span></div>
+        <div>Room: <span id="displayRoom" style="color:var(--cyan)"></span></div>
+      </div>
+    </div>
+
+    <!-- Actions -->
+    <div class="actions-scroll">
+
+      <!-- Broadcast -->
+      <div class="action-card">
+        <div class="action-title">
+          Broadcast
+          <span class="tag tag-blue">ALL</span>
+        </div>
+        <div class="action-desc">Push an event to every connected client simultaneously.</div>
+        <div class="field-row">
+          <div class="field-label">Message</div>
+          <input type="text" id="broadcastMsg" value="Hello, everyone! 👋" />
+        </div>
+        <div class="field-row">
+          <div class="field-label">Event type</div>
+          <input type="text" id="broadcastType" value="broadcast" />
+        </div>
+        <div style="display:flex; align-items:center; gap:8px; margin-bottom:10px;">
+          <input type="checkbox" id="broadcastSticky" style="accent-color:var(--red)">
+          <label for="broadcastSticky" style="font-size:11px; color:var(--text-dim); cursor:pointer">
+            Sticky (retain for late joiners)
+          </label>
+        </div>
+        <button class="btn btn-blue btn-full" onclick="sendBroadcast()" id="broadcastBtn" disabled>
+          ⟡ Broadcast to All
+        </button>
+      </div>
+
+      <!-- Direct -->
+      <div class="action-card">
+        <div class="action-title">
+          Direct Send
+          <span class="tag tag-amber">CLIENT</span>
+        </div>
+        <div class="action-desc">Target a specific connection by its client UUID.</div>
+        <div class="field-row">
+          <div class="field-label">Client ID (leave blank = self)</div>
+          <input type="text" id="directClientId" placeholder="auto-filled on connect" />
+        </div>
+        <div class="field-row">
+          <div class="field-label">Message</div>
+          <input type="text" id="directMsg" value="Hey, this is just for you!" />
+        </div>
+        <button class="btn btn-amber btn-full" onclick="sendDirect()" id="directBtn" disabled>
+          → Send to Client
+        </button>
+      </div>
+
+      <!-- User -->
+      <div class="action-card">
+        <div class="action-title">
+          Notify User
+          <span class="tag tag-purple">USER</span>
+        </div>
+        <div class="action-desc">Send to all connections belonging to a user (multi-tab/device).</div>
+        <div class="field-row">
+          <div class="field-label">Target user ID</div>
+          <input type="text" id="targetUser" value="alice" />
+        </div>
+        <div class="field-row">
+          <div class="field-label">Message</div>
+          <input type="text" id="userMsg" value="You have a new notification 🔔" />
+        </div>
+        <button class="btn btn-purple btn-full" onclick="sendToUser()" id="userBtn" disabled>
+          ◈ Notify User
+        </button>
+      </div>
+
+      <!-- Group -->
+      <div class="action-card">
+        <div class="action-title">
+          Group Send
+          <span class="tag tag-cyan">GROUP</span>
+        </div>
+        <div class="action-desc">Push to everyone in a named room or channel.</div>
+        <div class="field-row">
+          <div class="field-label">Group name</div>
+          <input type="text" id="targetGroup" value="team-backend" />
+        </div>
+        <div class="field-row">
+          <div class="field-label">Message</div>
+          <input type="text" id="groupMsg" value="Deploy is live 🚀" />
+        </div>
+        <button class="btn btn-cyan btn-full" onclick="sendToGroup()" id="groupBtn" disabled>
+          ⬡ Send to Group
+        </button>
+      </div>
+
+      <!-- Sticky clear -->
+      <div class="action-card">
+        <div class="action-title">
+          Sticky Events
+          <span class="tag tag-red">CACHE</span>
+        </div>
+        <div class="action-desc">Clear retained events for a topic from the server's ring buffer.</div>
+        <div class="field-row">
+          <div class="field-label">Topic</div>
+          <input type="text" id="clearTopic" value="status" />
+        </div>
+        <button class="btn btn-red btn-full" onclick="clearSticky()" id="stickyBtn" disabled>
+          ⊗ Clear Sticky Topic
+        </button>
+      </div>
+
+    </div>
+  </aside>
+
+  <!-- ── Main top tabs ──────────────────────────────────── -->
+  <div class="main-top">
+    <div class="tab active" onclick="switchTab('log', this)">Event Log</div>
+    <div class="tab" onclick="switchTab('sticky', this)">Sticky Cache</div>
+    <div class="tab" onclick="switchTab('code', this)">Code Examples</div>
+  </div>
+
+  <!-- ── Main content ───────────────────────────────────── -->
+  <div class="main-content">
+
+    <!-- Event Log -->
+    <div class="tab-panel active" id="tab-log">
+      <div class="log-toolbar">
+        <div class="log-filters">
+          <div class="filter-chip active" data-filter="all" onclick="setFilter('all', this)">All</div>
+          <div class="filter-chip" data-filter="connected" onclick="setFilter('connected', this)" style="color:var(--green)">Connected</div>
+          <div class="filter-chip" data-filter="broadcast" onclick="setFilter('broadcast', this)" style="color:var(--blue)">Broadcast</div>
+          <div class="filter-chip" data-filter="direct" onclick="setFilter('direct', this)" style="color:var(--amber)">Direct</div>
+          <div class="filter-chip" data-filter="user" onclick="setFilter('user', this)" style="color:var(--purple)">User</div>
+          <div class="filter-chip" data-filter="group" onclick="setFilter('group', this)" style="color:var(--cyan)">Group</div>
+        </div>
+        <div style="display:flex; align-items:center; gap:10px">
+          <span class="log-count" id="logCount">0 events</span>
+          <button class="btn btn-red" style="padding:4px 10px; font-size:10px" onclick="clearLog()">Clear</button>
+        </div>
+      </div>
+      <div id="eventLog">
+        <div class="log-empty" id="logEmpty">
+          <div class="log-empty-icon">⟳</div>
+          <div class="log-empty-text">Waiting for events</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Sticky Panel -->
+    <div class="tab-panel" id="tab-sticky">
+      <div style="padding:16px 20px; border-bottom:1px solid var(--border); display:flex; justify-content:space-between; align-items:center;">
+        <span style="font-size:11px; text-transform:uppercase; letter-spacing:2px; color:var(--text-dim)">Retained Events</span>
+        <span style="font-size:11px; color:var(--text-dim)" id="stickyCount">0 entries</span>
+      </div>
+      <div id="stickyPanel">
+        <div class="log-empty" style="height:200px">
+          <div class="log-empty-icon">◎</div>
+          <div class="log-empty-text">No sticky events yet</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Code Panel -->
+    <div class="tab-panel" id="tab-code">
+      <div class="code-nav">
+        <div class="code-tab active" onclick="switchCode('connect', this)">Connect</div>
+        <div class="code-tab" onclick="switchCode('broadcast', this)">Broadcast</div>
+        <div class="code-tab" onclick="switchCode('direct', this)">Direct Send</div>
+        <div class="code-tab" onclick="switchCode('user', this)">User Notify</div>
+        <div class="code-tab" onclick="switchCode('group', this)">Group Send</div>
+        <div class="code-tab" onclick="switchCode('sticky', this)">Sticky Events</div>
+        <div class="code-tab" onclick="switchCode('reconnect', this)">Auto-Reconnect</div>
+      </div>
+      <div id="codePanel">
+
+        <div class="code-block active" id="code-connect">
+<pre><span class="cm">// ── Connect to the SSE stream ──────────────────────────</span>
+<span class="cm">//</span>
+<span class="cm">// Query params:</span>
+<span class="cm">//   userId  – identifies this user across all their tabs</span>
+<span class="cm">//   room    – auto-joins a group on connect</span>
+<span class="cm">//   topics  – comma-separated topics for sticky replay</span>
+
+<span class="kw">const</span> <span class="fn">createSSE</span> = (userId, room, topics) => {
+  <span class="kw">const</span> params = <span class="kw">new</span> <span class="tp">URLSearchParams</span>({
+    userId,
+    room,
+    topics: topics.join(<span class="str">','</span>),
+  });
+
+  <span class="kw">const</span> es = <span class="kw">new</span> <span class="tp">EventSource</span>(
+    <span class="str">`http://localhost:3000/events?${params}`</span>
+  );
+
+  <span class="cm">// ── Connected ─────────────────────────────────────────</span>
+  es.addEventListener(<span class="str">'connected'</span>, (e) => {
+    <span class="kw">const</span> { clientId } = <span class="tp">JSON</span>.parse(e.data);
+    console.log(<span class="str">'✅ Connected as'</span>, clientId);
+  });
+
+  <span class="cm">// ── Generic message handler ────────────────────────────</span>
+  es.onmessage = (e) => {
+    console.log(<span class="str">'message:'</span>, e.data);
+  };
+
+  <span class="cm">// ── Connection error ───────────────────────────────────</span>
+  es.onerror = () => {
+    console.warn(<span class="str">'SSE connection lost, browser will retry…'</span>);
+  };
+
+  <span class="kw">return</span> es;
+};
+
+<span class="kw">const</span> es = <span class="fn">createSSE</span>(<span class="str">'alice'</span>, <span class="str">'team-backend'</span>, [<span class="str">'status'</span>, <span class="str">'orders'</span>]);</pre>
+        </div>
+
+        <div class="code-block" id="code-broadcast">
+<pre><span class="cm">// ── Broadcast to all connected clients ─────────────────</span>
+
+<span class="cm">// Server-side (Go)</span>
+hub.<span class="fn">Broadcast</span>(sse.<span class="fn">NewEvent</span>(<span class="str">"alert"</span>, <span class="str">`{"msg":"Server restart in 5 min"}`</span>))
+
+<span class="cm">// Via REST trigger endpoint</span>
+<span class="kw">await</span> <span class="fn">fetch</span>(<span class="str">'http://localhost:3000/broadcast'</span>, {
+  method: <span class="str">'POST'</span>,
+  headers: { <span class="str">'Content-Type'</span>: <span class="str">'application/json'</span> },
+  body: <span class="tp">JSON</span>.<span class="fn">stringify</span>({
+    type: <span class="str">'alert'</span>,
+    data: <span class="str">'Server restart in 5 min'</span>,
+  }),
+});
+
+<span class="cm">// ── Receive on the client ─────────────────────────────</span>
+es.addEventListener(<span class="str">'alert'</span>, (e) => {
+  console.log(<span class="str">'📢 Broadcast:'</span>, e.data);
+  showNotification(e.data);
+});
+
+<span class="cm">// ── Broadcast with sticky flag ────────────────────────</span>
+<span class="kw">await</span> <span class="fn">fetch</span>(<span class="str">'http://localhost:3000/broadcast'</span>, {
+  method: <span class="str">'POST'</span>,
+  headers: { <span class="str">'Content-Type'</span>: <span class="str">'application/json'</span> },
+  body: <span class="tp">JSON</span>.<span class="fn">stringify</span>({
+    type:   <span class="str">'status'</span>,
+    data:   <span class="str">'{"state":"online"}'</span>,
+    topic:  <span class="str">'status'</span>,   <span class="cm">// bucket for sticky storage</span>
+    sticky: <span class="kw">true</span>,        <span class="cm">// late joiners get this replayed</span>
+  }),
+});</pre>
+        </div>
+
+        <div class="code-block" id="code-direct">
+<pre><span class="cm">// ── Send to a specific client connection ───────────────</span>
+
+<span class="cm">// Server-side (Go)</span>
+err := hub.<span class="fn">Send</span>(<span class="str">"client-uuid"</span>, sse.<span class="fn">NewEvent</span>(<span class="str">"ping"</span>, <span class="str">"pong"</span>))
+<span class="kw">if</span> err == sse.ErrClientNotFound {
+  <span class="cm">// client disconnected</span>
+}
+
+<span class="cm">// Via REST trigger endpoint</span>
+<span class="kw">const</span> clientId = <span class="str">'3a8f21bc-…'</span>;  <span class="cm">// from the 'connected' event</span>
+
+<span class="kw">await</span> <span class="fn">fetch</span>(<span class="str">`http://localhost:3000/send/${clientId}`</span>, {
+  method: <span class="str">'POST'</span>,
+  headers: { <span class="str">'Content-Type'</span>: <span class="str">'application/json'</span> },
+  body: <span class="tp">JSON</span>.<span class="fn">stringify</span>({
+    type: <span class="str">'direct'</span>,
+    data: <span class="str">'Hey, just you!'</span>,
+  }),
+});
+
+<span class="cm">// ── Receive on the client ─────────────────────────────</span>
+es.addEventListener(<span class="str">'direct'</span>, (e) => {
+  console.log(<span class="str">'🎯 Direct:'</span>, e.data);
+});</pre>
+        </div>
+
+        <div class="code-block" id="code-user">
+<pre><span class="cm">// ── Notify all connections of a user ──────────────────</span>
+<span class="cm">// Useful for multi-tab or multi-device scenarios.</span>
+
+<span class="cm">// Server-side (Go)</span>
+hub.<span class="fn">SendToUser</span>(<span class="str">"alice"</span>, sse.<span class="fn">NewEvent</span>(<span class="str">"notification"</span>, <span class="str">`{
+  "text": "You have 3 new messages",
+  "url":  "/inbox"
+}`</span>))
+
+<span class="cm">// Via REST trigger endpoint</span>
+<span class="kw">await</span> <span class="fn">fetch</span>(<span class="str">'http://localhost:3000/user/alice'</span>, {
+  method: <span class="str">'POST'</span>,
+  headers: { <span class="str">'Content-Type'</span>: <span class="str">'application/json'</span> },
+  body: <span class="tp">JSON</span>.<span class="fn">stringify</span>({
+    type: <span class="str">'notification'</span>,
+    data: <span class="str">'{"text":"You have 3 new messages"}'</span>,
+  }),
+});
+
+<span class="cm">// ── Receive on the client ─────────────────────────────</span>
+es.addEventListener(<span class="str">'notification'</span>, (e) => {
+  <span class="kw">const</span> { text, url } = <span class="tp">JSON</span>.<span class="fn">parse</span>(e.data);
+  showNotification(text, url);
+});
+
+<span class="cm">// ── Check if user is online ───────────────────────────</span>
+hub.<span class="fn">IsOnline</span>(<span class="str">"alice"</span>)          <span class="cm">// bool</span>
+hub.<span class="fn">ConnectionCount</span>(<span class="str">"alice"</span>)  <span class="cm">// int (tabs open)</span></pre>
+        </div>
+
+        <div class="code-block" id="code-group">
+<pre><span class="cm">// ── Send to a group / room ─────────────────────────────</span>
+
+<span class="cm">// Server-side (Go) — join on connect</span>
+<span class="fn">OnConnect</span>: <span class="kw">func</span>(ctx *fiber.Ctx, client *sse.Client) <span class="tp">error</span> {
+  room := ctx.<span class="fn">Query</span>(<span class="str">"room"</span>)
+  <span class="kw">if</span> room != <span class="str">""</span> {
+    hub.<span class="fn">JoinGroup</span>(client.ID, room)
+  }
+  <span class="kw">return nil</span>
+},
+
+<span class="cm">// Send to the group</span>
+hub.<span class="fn">SendToGroup</span>(<span class="str">"team-backend"</span>, sse.<span class="fn">NewEvent</span>(<span class="str">"deploy"</span>, <span class="str">`{
+  "env":    "production",
+  "status": "success",
+  "sha":    "d3adb33f"
+}`</span>))
+
+<span class="cm">// Via REST trigger endpoint</span>
+<span class="kw">await</span> <span class="fn">fetch</span>(<span class="str">'http://localhost:3000/group/team-backend'</span>, {
+  method: <span class="str">'POST'</span>,
+  headers: { <span class="str">'Content-Type'</span>: <span class="str">'application/json'</span> },
+  body: <span class="tp">JSON</span>.<span class="fn">stringify</span>({
+    type: <span class="str">'deploy'</span>,
+    data: <span class="str">'{"env":"production","status":"success"}'</span>,
+  }),
+});
+
+<span class="cm">// ── Dynamic join / leave ──────────────────────────────</span>
+<span class="kw">await</span> <span class="fn">fetch</span>(<span class="str">`/group/team-backend/join/${clientId}`</span>, { method: <span class="str">'POST'</span> });
+<span class="kw">await</span> <span class="fn">fetch</span>(<span class="str">`/group/team-backend/leave/${clientId}`</span>, { method: <span class="str">'POST'</span> });</pre>
+        </div>
+
+        <div class="code-block" id="code-sticky">
+<pre><span class="cm">// ── Sticky events — replay for late joiners ────────────</span>
+<span class="cm">//</span>
+<span class="cm">// Mark an event sticky with a topic. The hub keeps the last</span>
+<span class="cm">// StickySize (default: 10) events per topic in memory.</span>
+<span class="cm">// New clients receive a replay automatically on connect.</span>
+
+<span class="cm">// Server-side (Go)</span>
+event := sse.<span class="fn">NewEvent</span>(<span class="str">"status"</span>, <span class="str">`{"state":"online","users":42}`</span>).
+  <span class="fn">WithTopic</span>(<span class="str">"status"</span>).   <span class="cm">// sticky bucket name</span>
+  <span class="fn">WithRetry</span>(<span class="num">3000</span>)        <span class="cm">// suggest 3s reconnect delay</span>
+
+hub.<span class="fn">Broadcast</span>(event)
+
+<span class="cm">// ── Client subscribes to topics on connect ────────────</span>
+<span class="kw">const</span> es = <span class="kw">new</span> <span class="tp">EventSource</span>(
+  <span class="str">'http://localhost:3000/events?userId=alice&topics=status,orders'</span>
+);
+<span class="cm">// On connect, the server replays the last N events for</span>
+<span class="cm">// each of the listed topics automatically.</span>
+
+<span class="cm">// ── Clear sticky events for a topic ─────────────────</span>
+hub.<span class="fn">ClearSticky</span>(<span class="str">"status"</span>)
+
+<span class="cm">// Via REST</span>
+<span class="kw">await</span> <span class="fn">fetch</span>(<span class="str">'http://localhost:3000/sticky/status'</span>, {
+  method: <span class="str">'DELETE'</span>
+});</pre>
+        </div>
+
+        <div class="code-block" id="code-reconnect">
+<pre><span class="cm">// ── Auto-reconnect wrapper with backoff ────────────────</span>
+<span class="cm">// The browser retries SSE automatically, but this wrapper</span>
+<span class="cm">// gives you lifecycle hooks and exponential backoff control.</span>
+
+<span class="kw">class</span> <span class="tp">SSEClient</span> {
+  <span class="fn">constructor</span>(url, options = {}) {
+    <span class="kw">this</span>.url        = url;
+    <span class="kw">this</span>.options    = options;
+    <span class="kw">this</span>.handlers   = {};
+    <span class="kw">this</span>.retryDelay = <span class="num">1000</span>;
+    <span class="kw">this</span>.maxDelay   = <span class="num">30000</span>;
+    <span class="kw">this</span>.<span class="fn">_connect</span>();
+  }
+
+  <span class="fn">_connect</span>() {
+    <span class="kw">this</span>.es = <span class="kw">new</span> <span class="tp">EventSource</span>(<span class="kw">this</span>.url);
+
+    <span class="kw">this</span>.es.onopen = () => {
+      <span class="kw">this</span>.retryDelay = <span class="num">1000</span>;  <span class="cm">// reset on success</span>
+      <span class="kw">this</span>.options.onConnect?.();
+    };
+
+    <span class="kw">this</span>.es.onerror = () => {
+      <span class="kw">this</span>.es.<span class="fn">close</span>();
+      <span class="kw">this</span>.options.onDisconnect?.();
+      setTimeout(() => <span class="kw">this</span>.<span class="fn">_connect</span>(), <span class="kw">this</span>.retryDelay);
+      <span class="kw">this</span>.retryDelay = Math.<span class="fn">min</span>(<span class="kw">this</span>.retryDelay * <span class="num">2</span>, <span class="kw">this</span>.maxDelay);
+    };
+
+    <span class="cm">// Re-attach all registered handlers</span>
+    <span class="tp">Object</span>.<span class="fn">entries</span>(<span class="kw">this</span>.handlers).<span class="fn">forEach</span>(([type, fn]) => {
+      <span class="kw">this</span>.es.<span class="fn">addEventListener</span>(type, fn);
+    });
+  }
+
+  <span class="fn">on</span>(type, fn) {
+    <span class="kw">this</span>.handlers[type] = fn;
+    <span class="kw">this</span>.es.<span class="fn">addEventListener</span>(type, fn);
+    <span class="kw">return this</span>;
+  }
+
+  <span class="fn">close</span>() { <span class="kw">this</span>.es.<span class="fn">close</span>(); }
+}
+
+<span class="cm">// Usage</span>
+<span class="kw">const</span> client = <span class="kw">new</span> <span class="tp">SSEClient</span>(
+  <span class="str">'http://localhost:3000/events?userId=alice'</span>,
+  {
+    onConnect:    () => console.log(<span class="str">'connected'</span>),
+    onDisconnect: () => console.log(<span class="str">'reconnecting…'</span>),
+  }
+)
+  .<span class="fn">on</span>(<span class="str">'connected'</span>,    (e) => console.log(<span class="str">'welcome'</span>, <span class="tp">JSON</span>.<span class="fn">parse</span>(e.data)))
+  .<span class="fn">on</span>(<span class="str">'broadcast'</span>,   (e) => console.log(<span class="str">'broadcast'</span>, e.data))
+  .<span class="fn">on</span>(<span class="str">'notification'</span>,(e) => showBanner(e.data))
+  .<span class="fn">on</span>(<span class="str">'deploy'</span>,      (e) => refreshDashboard(e.data));</pre>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- Stats bar -->
+    <div class="stats-bar">
+      <div class="stat">Events received: <span class="stat-val" id="statEvents">0</span></div>
+      <div class="stat-sep"></div>
+      <div class="stat">Sticky cached: <span class="stat-val" id="statSticky">0</span></div>
+      <div class="stat-sep"></div>
+      <div class="stat">Connection: <span class="stat-val" id="statConn">—</span></div>
+      <div class="stat-sep"></div>
+      <div class="stat">Uptime: <span class="stat-val" id="statUptime">—</span></div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ── Toast container ────────────────────────────────── -->
+<div id="toastContainer"></div>
+
+<script>
+// ────────────────────────────────────────────────────────
+// State
+// ────────────────────────────────────────────────────────
+let es            = null;
+let myClientId    = null;
+let currentFilter = 'all';
+let eventCount    = 0;
+let connectedAt   = null;
+const stickyStore = {};  // topic -> [events]
+let uptimeTimer   = null;
+
+// ────────────────────────────────────────────────────────
+// SSE Connection
+// ────────────────────────────────────────────────────────
+function connect() {
+  if (es) disconnect();
+
+  const serverUrl = document.getElementById('serverUrl').value.trim();
+  const userId    = document.getElementById('userId').value.trim();
+  const room      = document.getElementById('roomId').value.trim();
+  const topics    = document.getElementById('topics').value.trim();
+
+  const params = new URLSearchParams({ userId });
+  if (room)   params.set('room', room);
+  if (topics) params.set('topics', topics);
+
+  const url = `${serverUrl}/events?${params}`;
+
+  addSystemLog('Connecting to ' + url);
+
+  es = new EventSource(url);
+
+  es.onopen = () => {
+    setConnected(true);
+    connectedAt = Date.now();
+    startUptimeTimer();
+    addSystemLog('SSE stream opened');
+    toast('Connected', 'Stream is live', 'green', '⚡');
+  };
+
+  es.onerror = () => {
+    setConnected(false);
+    stopUptimeTimer();
+    addSystemLog('Connection error — browser will retry…');
+    toast('Disconnected', 'Attempting to reconnect', 'red', '✕');
+  };
+
+  // ── Named event handlers ────────────────────────────
+  es.addEventListener('connected', (e) => {
+    try {
+      const payload = JSON.parse(e.data);
+      myClientId = payload.clientId;
+      document.getElementById('clientId').textContent    = myClientId;
+      document.getElementById('displayUser').textContent = payload.userId || '—';
+      document.getElementById('displayRoom').textContent = room || '—';
+      document.getElementById('directClientId').value   = myClientId;
+      document.getElementById('clientInfo').style.display = 'block';
+    } catch {}
+    addLog('connected', 'connected', e.data);
+    toast('Welcome', 'Client registered', 'green', '✓');
+  });
+
+  es.addEventListener('broadcast', (e) => {
+    addLog('broadcast', 'broadcast', e.data);
+    toast('Broadcast', e.data, 'blue', '⟡');
+  });
+
+  es.addEventListener('alert', (e) => {
+    addLog('broadcast', 'alert', e.data);
+    toast('Alert', e.data, 'blue', '📢');
+  });
+
+  es.addEventListener('direct', (e) => {
+    addLog('direct', 'direct', e.data);
+    toast('Direct Message', e.data, 'amber', '→');
+  });
+
+  es.addEventListener('notification', (e) => {
+    addLog('user', 'notification', e.data);
+    toast('Notification', e.data, 'amber', '🔔');
+  });
+
+  es.addEventListener('deploy', (e) => {
+    addLog('group', 'deploy', e.data);
+    toast('Group: deploy', e.data, 'cyan', '⬡');
+  });
+
+  es.addEventListener('room', (e) => {
+    addLog('group', 'room', e.data);
+    toast('Room Message', e.data, 'cyan', '⬡');
+  });
+
+  es.addEventListener('status', (e) => {
+    addLog('status', 'status', e.data);
+    addSticky('status', e.data);
+  });
+
+  es.addEventListener('update', (e) => {
+    addLog('sticky', 'update', e.data);
+    addSticky('update', e.data);
+  });
+
+  // Fallback for any event type
+  es.onmessage = (e) => {
+    addLog('system', 'message', e.data);
+  };
+}
+
+function disconnect() {
+  if (es) {
+    es.close();
+    es = null;
+  }
+  setConnected(false);
+  stopUptimeTimer();
+  myClientId = null;
+  document.getElementById('clientInfo').style.display = 'none';
+  addSystemLog('Disconnected');
+}
+
+// ────────────────────────────────────────────────────────
+// UI state helpers
+// ────────────────────────────────────────────────────────
+function setConnected(state) {
+  const badge   = document.getElementById('connStatus');
+  const label   = document.getElementById('connLabel');
+  const btnConn = document.getElementById('connectBtn');
+  const btnDisc = document.getElementById('disconnectBtn');
+  const statEl  = document.getElementById('statConn');
+  const actionBtns = ['broadcastBtn','directBtn','userBtn','groupBtn','stickyBtn'];
+
+  badge.className  = 'status-badge ' + (state ? 'connected' : 'disconnected');
+  label.textContent = state ? 'Connected' : 'Disconnected';
+  statEl.textContent = state ? 'Live' : '—';
+
+  if (state) {
+    btnConn.style.display = 'none';
+    btnDisc.style.display = '';
+    btnDisc.disabled = false;
+  } else {
+    btnConn.style.display = '';
+    btnDisc.style.display = 'none';
+  }
+
+  actionBtns.forEach(id => {
+    document.getElementById(id).disabled = !state;
+  });
+}
+
+// ────────────────────────────────────────────────────────
+// REST triggers
+// ────────────────────────────────────────────────────────
+const apiBase = () => document.getElementById('serverUrl').value.trim();
+
+async function apiPost(path, body) {
+  try {
+    const res = await fetch(apiBase() + path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    return await res.json();
+  } catch (err) {
+    toast('API Error', err.message, 'red', '✕');
+    return null;
+  }
+}
+
+async function sendBroadcast() {
+  const msg    = document.getElementById('broadcastMsg').value;
+  const type   = document.getElementById('broadcastType').value;
+  const sticky = document.getElementById('broadcastSticky').checked;
+  await apiPost('/broadcast', { type, data: msg, sticky, topic: type });
+  toast('Sent', `Broadcast: "${msg}"`, 'blue', '⟡');
+}
+
+async function sendDirect() {
+  const clientId = document.getElementById('directClientId').value || myClientId;
+  const msg      = document.getElementById('directMsg').value;
+  if (!clientId) return toast('Error', 'No client ID', 'red', '✕');
+  await apiPost(`/send/${clientId}`, { type: 'direct', data: msg });
+  toast('Sent', `Direct to ${clientId.slice(0,8)}…`, 'amber', '→');
+}
+
+async function sendToUser() {
+  const userId = document.getElementById('targetUser').value;
+  const msg    = document.getElementById('userMsg').value;
+  await apiPost(`/user/${userId}`, { type: 'notification', data: msg });
+  toast('Sent', `To user: ${userId}`, 'purple', '◈');
+}
+
+async function sendToGroup() {
+  const group = document.getElementById('targetGroup').value;
+  const msg   = document.getElementById('groupMsg').value;
+  await apiPost(`/group/${group}`, { type: 'deploy', data: msg });
+  toast('Sent', `To group: ${group}`, 'cyan', '⬡');
+}
+
+async function clearSticky() {
+  const topic = document.getElementById('clearTopic').value;
+  try {
+    await fetch(`${apiBase()}/sticky/${topic}`, { method: 'DELETE' });
+    // Clear locally
+    delete stickyStore[topic];
+    renderSticky();
+    toast('Cleared', `Sticky topic: ${topic}`, 'red', '⊗');
+  } catch (err) {
+    toast('Error', err.message, 'red', '✕');
+  }
+}
+
+// ────────────────────────────────────────────────────────
+// Event log
+// ────────────────────────────────────────────────────────
+function addLog(category, type, data) {
+  eventCount++;
+  document.getElementById('statEvents').textContent = eventCount;
+  document.getElementById('logCount').textContent   = `${eventCount} events`;
+
+  const empty = document.getElementById('logEmpty');
+  if (empty) empty.style.display = 'none';
+
+  if (currentFilter !== 'all' && currentFilter !== category) return;
+
+  const log   = document.getElementById('eventLog');
+  const entry = document.createElement('div');
+  entry.className = `log-entry ev-${category}`;
+  entry.dataset.category = category;
+
+  const now = new Date();
+  const time = now.toTimeString().slice(0, 8);
+
+  entry.innerHTML = `
+    <span class="log-time">${time}</span>
+    <span class="log-type">${type}</span>
+    <span class="log-data">${escHtml(data)}</span>
+  `;
+
+  log.insertBefore(entry, log.firstChild);
+
+  // Keep log to 500 entries
+  while (log.children.length > 501) log.removeChild(log.lastChild);
+}
+
+function addSystemLog(msg) {
+  addLog('system', 'sys', msg);
+}
+
+function clearLog() {
+  const log = document.getElementById('eventLog');
+  log.innerHTML = '<div class="log-empty" id="logEmpty"><div class="log-empty-icon">⟳</div><div class="log-empty-text">Waiting for events</div></div>';
+  eventCount = 0;
+  document.getElementById('statEvents').textContent = '0';
+  document.getElementById('logCount').textContent   = '0 events';
+}
+
+function setFilter(filter, el) {
+  currentFilter = filter;
+  document.querySelectorAll('.filter-chip').forEach(c => c.classList.remove('active'));
+  el.classList.add('active');
+}
+
+// ────────────────────────────────────────────────────────
+// Sticky panel
+// ────────────────────────────────────────────────────────
+function addSticky(topic, data) {
+  if (!stickyStore[topic]) stickyStore[topic] = [];
+  stickyStore[topic].unshift({ data, time: new Date().toLocaleTimeString() });
+  if (stickyStore[topic].length > 10) stickyStore[topic].pop();
+  renderSticky();
+}
+
+function renderSticky() {
+  const panel = document.getElementById('stickyPanel');
+  const count = Object.values(stickyStore).reduce((s, a) => s + a.length, 0);
+  document.getElementById('stickyCount').textContent = `${count} entries`;
+  document.getElementById('statSticky').textContent  = count;
+
+  if (count === 0) {
+    panel.innerHTML = `<div class="log-empty" style="height:200px"><div class="log-empty-icon">◎</div><div class="log-empty-text">No sticky events yet</div></div>`;
+    return;
+  }
+
+  let html = '<div class="sticky-grid">';
+  for (const [topic, events] of Object.entries(stickyStore)) {
+    events.forEach(ev => {
+      html += `
+        <div class="sticky-card">
+          <div class="sticky-card-topic">⊛ ${escHtml(topic)}</div>
+          <div class="sticky-card-data">${escHtml(ev.data)}</div>
+          <div class="sticky-card-time">${ev.time}</div>
+        </div>`;
+    });
+  }
+  html += '</div>';
+  panel.innerHTML = html;
+}
+
+// ────────────────────────────────────────────────────────
+// Toast notifications
+// ────────────────────────────────────────────────────────
+function toast(title, msg, color = 'green', icon = '•') {
+  const container = document.getElementById('toastContainer');
+  const el = document.createElement('div');
+  el.className = `toast toast-${color}`;
+  el.innerHTML = `
+    <div class="toast-icon">${icon}</div>
+    <div class="toast-body">
+      <div class="toast-title">${escHtml(title)}</div>
+      <div class="toast-msg">${escHtml(String(msg).slice(0, 80))}</div>
+    </div>
+  `;
+  container.appendChild(el);
+
+  setTimeout(() => {
+    el.classList.add('out');
+    setTimeout(() => el.remove(), 200);
+  }, 3500);
+}
+
+// ────────────────────────────────────────────────────────
+// Tab switching
+// ────────────────────────────────────────────────────────
+function switchTab(name, el) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+  el.classList.add('active');
+  document.getElementById(`tab-${name}`).classList.add('active');
+}
+
+function switchCode(name, el) {
+  document.querySelectorAll('.code-tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.code-block').forEach(b => b.classList.remove('active'));
+  el.classList.add('active');
+  document.getElementById(`code-${name}`).classList.add('active');
+}
+
+// ────────────────────────────────────────────────────────
+// Uptime
+// ────────────────────────────────────────────────────────
+function startUptimeTimer() {
+  uptimeTimer = setInterval(() => {
+    if (!connectedAt) return;
+    const s = Math.floor((Date.now() - connectedAt) / 1000);
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    const sec = s % 60;
+    document.getElementById('statUptime').textContent =
+      h > 0
+        ? `${h}h ${m}m ${sec}s`
+        : m > 0 ? `${m}m ${sec}s` : `${sec}s`;
+  }, 1000);
+}
+
+function stopUptimeTimer() {
+  clearInterval(uptimeTimer);
+  document.getElementById('statUptime').textContent = '—';
+}
+
+// ────────────────────────────────────────────────────────
+// Util
+// ────────────────────────────────────────────────────────
+function escHtml(str) {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+// ────────────────────────────────────────────────────────
+// Enter key on inputs
+// ────────────────────────────────────────────────────────
+document.querySelectorAll('input[type="text"]').forEach(inp => {
+  inp.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      const id = inp.id;
+      if (id === 'serverUrl' || id === 'userId' || id === 'roomId' || id === 'topics') connect();
+      else if (id === 'broadcastMsg' || id === 'broadcastType') sendBroadcast();
+      else if (id === 'directMsg' || id === 'directClientId') sendDirect();
+      else if (id === 'userMsg' || id === 'targetUser') sendToUser();
+      else if (id === 'groupMsg' || id === 'targetGroup') sendToGroup();
+      else if (id === 'clearTopic') clearSticky();
+    }
+  });
+});
+</script>
+</body>
+</html>
