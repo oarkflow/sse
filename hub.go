@@ -1,5 +1,5 @@
 // Package sse provides a robust Server-Sent Events (SSE) implementation
-// for the GoFiber framework with sticky events, client groups, and
+// for the fh framework with sticky events, client groups, and
 // targeted delivery.
 //
 // SSE is a server push technology enabling a client to receive automatic

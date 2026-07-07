@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gofiber/fiber/v3"
+	"github.com/oarkflow/fh"
 )
 
 func TestRunAuth(t *testing.T) {
@@ -19,7 +19,7 @@ func TestRunAuth(t *testing.T) {
 	t.Run("required auth with nil result", func(t *testing.T) {
 		_, err := runAuth(nil, HandlerOptions{
 			RequireAuth: true,
-			Authenticate: func(_ fiber.Ctx) (*AuthResult, error) {
+			Authenticate: func(_ fh.Ctx) (*AuthResult, error) {
 				return nil, nil
 			},
 		})
@@ -31,7 +31,7 @@ func TestRunAuth(t *testing.T) {
 	t.Run("auth returns error", func(t *testing.T) {
 		wantErr := errors.New("denied")
 		_, err := runAuth(nil, HandlerOptions{
-			Authenticate: func(_ fiber.Ctx) (*AuthResult, error) {
+			Authenticate: func(_ fh.Ctx) (*AuthResult, error) {
 				return nil, wantErr
 			},
 		})
@@ -52,7 +52,7 @@ func TestCompileAllowedOrigins(t *testing.T) {
 }
 
 func TestIsOriginAllowed(t *testing.T) {
-	var ctx fiber.Ctx
+	var ctx fh.Ctx
 
 	t.Run("no policy allows all", func(t *testing.T) {
 		if !isOriginAllowed("", ctx, HandlerOptions{}, nil, false) {
@@ -83,7 +83,7 @@ func TestIsOriginAllowed(t *testing.T) {
 
 	t.Run("validator can reject", func(t *testing.T) {
 		if isOriginAllowed("https://app.example.com", ctx, HandlerOptions{
-			OriginValidator: func(_ string, _ fiber.Ctx) bool { return false },
+			OriginValidator: func(_ string, _ fh.Ctx) bool { return false },
 		}, nil, false) {
 			t.Fatal("expected custom validator to reject")
 		}
@@ -161,15 +161,15 @@ func TestConnectRateLimiterCleanup(t *testing.T) {
 
 func TestIsTLSRequestValues(t *testing.T) {
 	if !isTLSRequestValues("https", "", "", false) {
-		t.Fatal("https protocol should be treated as tls")
-	}
-	if !isTLSRequestValues("http", "https", "", false) {
 		t.Fatal("x-forwarded-proto=https should be treated as tls")
 	}
-	if isTLSRequestValues("http", "", "8.8.8.8", false) {
+	if !isTLSRequestValues("", "on", "", false) {
+		t.Fatal("x-forwarded-ssl=on should be treated as tls")
+	}
+	if isTLSRequestValues("", "", "8.8.8.8", false) {
 		t.Fatal("plain http remote should be rejected")
 	}
-	if !isTLSRequestValues("http", "", "127.0.0.1", true) {
+	if !isTLSRequestValues("", "", "127.0.0.1", true) {
 		t.Fatal("localhost should be allowed when local insecure enabled")
 	}
 }

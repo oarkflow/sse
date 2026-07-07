@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gofiber/fiber/v3"
+	"github.com/oarkflow/fh"
 )
 
 func TestValidateHubOptions(t *testing.T) {
@@ -42,7 +42,7 @@ func TestValidateHandlerOptions(t *testing.T) {
 
 	if err := ValidateHandlerOptions(HandlerOptions{
 		RequireAuth: true,
-		Authenticate: func(ctx fiber.Ctx) (*AuthResult, error) {
+		Authenticate: func(ctx fh.Ctx) (*AuthResult, error) {
 			return nil, nil
 		},
 	}); err != nil {

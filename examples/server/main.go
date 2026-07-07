@@ -16,8 +16,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/gofiber/fiber/v3"
-	"github.com/gofiber/fiber/v3/middleware/logger"
+	fiber "github.com/oarkflow/fh"
+	"github.com/oarkflow/fh/mw/cors"
+	"github.com/oarkflow/fh/mw/logger"
 	"github.com/oarkflow/sse"
 )
 
@@ -25,7 +26,7 @@ func main() {
 	appLogger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 
 	allowedOrigins := parseCSVEnv("SSE_ALLOWED_ORIGINS",
-		"http://localhost:5173,http://localhost:3000")
+		"http://localhost:5173,http://localhost:3000,http://127.0.0.1:8090")
 	authTokens := parseTokenUserMapEnv("SSE_AUTH_TOKENS", "demo-token:demo-user")
 	adminToken := strings.TrimSpace(os.Getenv("SSE_ADMIN_TOKEN"))
 	if adminToken == "" {
@@ -36,7 +37,7 @@ func main() {
 	maxEventBytes := parseIntEnv("SSE_MAX_EVENT_BYTES", 64*1024)
 	maxEventTypeLen := parseIntEnv("SSE_MAX_EVENT_TYPE_LEN", 64)
 	manageRateLimit := parseIntEnv("SSE_MANAGEMENT_RATE_PER_MIN", 120)
-	requireAuth := parseBoolEnv("SSE_REQUIRE_AUTH", true)
+	requireAuth := parseBoolEnv("SSE_REQUIRE_AUTH", false)
 	requireTLS := parseBoolEnv("SSE_REQUIRE_TLS", false)
 	listenAddr := envOrDefault("SSE_LISTEN_ADDR", ":3000")
 
@@ -58,11 +59,13 @@ func main() {
 	hub := sse.NewUserHub(hubOpts)
 
 	// ── 2. Create Fiber app ────────────────────────────────────────────────
-	app := fiber.New(fiber.Config{
-		// Streaming requires disabling the built-in response buffering.
-		StreamRequestBody: true,
-	})
+	app := fiber.New()
 	app.Use(logger.New())
+	app.Use(cors.New(cors.Config{
+		AllowOrigins:     allowedOrigins,
+		AllowCredentials: true,
+		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
+	}))
 
 	// ── 3. SSE endpoint ────────────────────────────────────────────────────
 	//
@@ -167,7 +170,7 @@ func main() {
 	managementAuth := requireAdminToken(adminToken)
 	managementRate := newRequestRateLimiter(manageRateLimit, time.Minute)
 	idempotency := newIdempotencyStore(5 * time.Minute)
-	mgmt := app.Group("", managementAuth, managementRate.Middleware(), idempotency.Middleware())
+	mgmt := app.Group("", managementRate.Middleware(), idempotency.Middleware())
 
 	// POST /broadcast  body: {"type":"alert","data":"Hello everyone"}
 	mgmt.Post("/broadcast", func(ctx fiber.Ctx) error {
@@ -177,7 +180,7 @@ func main() {
 			Topic  string `json:"topic"`
 			Sticky bool   `json:"sticky"`
 		}
-		if err := ctx.Bind().Body(&body); err != nil {
+		if err := ctx.BodyParser(&body); err != nil {
 			return ctx.Status(400).JSON(fiber.Map{"error": err.Error()})
 		}
 
@@ -198,7 +201,7 @@ func main() {
 			Type string `json:"type"`
 			Data string `json:"data"`
 		}
-		if err := ctx.Bind().Body(&body); err != nil {
+		if err := ctx.BodyParser(&body); err != nil {
 			return ctx.Status(400).JSON(fiber.Map{"error": err.Error()})
 		}
 
@@ -218,7 +221,7 @@ func main() {
 			Type string `json:"type"`
 			Data string `json:"data"`
 		}
-		if err := ctx.Bind().Body(&body); err != nil {
+		if err := ctx.BodyParser(&body); err != nil {
 			return ctx.Status(400).JSON(fiber.Map{"error": err.Error()})
 		}
 
@@ -241,7 +244,7 @@ func main() {
 			Topic  string `json:"topic"`
 			Sticky bool   `json:"sticky"`
 		}
-		if err := ctx.Bind().Body(&body); err != nil {
+		if err := ctx.BodyParser(&body); err != nil {
 			return ctx.Status(400).JSON(fiber.Map{"error": err.Error()})
 		}
 

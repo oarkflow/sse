@@ -1,7 +1,6 @@
 package sse
 
 import (
-	"bufio"
 	"errors"
 	"log/slog"
 	"strings"
@@ -9,8 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/gofiber/fiber/v3"
-	"github.com/valyala/fasthttp"
+	"github.com/oarkflow/fh"
 )
 
 // AuthResult represents the outcome of request authentication.
@@ -71,18 +69,18 @@ func (m *HandlerMetrics) Snapshot() HandlerMetricsSnapshot {
 
 // HandlerOptions configures the SSE HTTP handler.
 type HandlerOptions struct {
-	OnConnect    func(ctx fiber.Ctx, client *Client) error
+	OnConnect    func(ctx fh.Ctx, client *Client) error
 	OnDisconnect func(client *Client)
 
-	ClientIDFromCtx func(ctx fiber.Ctx) string
-	UserIDFromCtx   func(ctx fiber.Ctx) string
-	TopicsFromCtx   func(ctx fiber.Ctx) []string
+	ClientIDFromCtx func(ctx fh.Ctx) string
+	UserIDFromCtx   func(ctx fh.Ctx) string
+	TopicsFromCtx   func(ctx fh.Ctx) []string
 
 	RequireAuth  bool
-	Authenticate func(ctx fiber.Ctx) (*AuthResult, error)
+	Authenticate func(ctx fh.Ctx) (*AuthResult, error)
 
 	AllowedOrigins   []string
-	OriginValidator  func(origin string, ctx fiber.Ctx) bool
+	OriginValidator  func(origin string, ctx fh.Ctx) bool
 	AllowCredentials bool
 
 	MaxConnectionsPerIP int
@@ -96,7 +94,7 @@ type HandlerOptions struct {
 	// If nil, the built-in local limiter is used.
 	ConnectionLimiter ConnectionLimiter
 
-	IPFromCtx func(ctx fiber.Ctx) string
+	IPFromCtx func(ctx fh.Ctx) string
 
 	Logger  *slog.Logger
 	Metrics *HandlerMetrics
@@ -106,36 +104,36 @@ type HandlerOptions struct {
 	StreamErrorLogInterval time.Duration
 }
 
-// Handler returns a GoFiber handler that upgrades the connection to SSE.
-func Handler(hub *Hub, opts HandlerOptions) fiber.Handler {
+// Handler returns an fh handler that upgrades the connection to SSE.
+func Handler(hub *Hub, opts HandlerOptions) fh.Handler {
 	return buildSSEHandler(hub.opts.ClientBufferSize, hub.AddClient, hub.RemoveClient, opts)
 }
 
 // HealthHandler returns a simple liveness endpoint.
-func HealthHandler() fiber.Handler {
-	return func(ctx fiber.Ctx) error {
-		return ctx.JSON(fiber.Map{"status": "ok"})
+func HealthHandler() fh.Handler {
+	return func(ctx fh.Ctx) error {
+		return ctx.JSON(fh.Map{"status": "ok"})
 	}
 }
 
 // ReadinessHandler reports readiness based on hub state and optional checks.
-func ReadinessHandler(hub *Hub, extraCheck func() error) fiber.Handler {
-	return func(ctx fiber.Ctx) error {
+func ReadinessHandler(hub *Hub, extraCheck func() error) fh.Handler {
+	return func(ctx fh.Ctx) error {
 		if hub == nil || hub.IsClosed() || hub.IsDraining() {
-			return ctx.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
+			return ctx.Status(fh.StatusServiceUnavailable).JSON(fh.Map{
 				"ready": false,
 				"hub":   "not-ready",
 			})
 		}
 		if extraCheck != nil {
 			if err := extraCheck(); err != nil {
-				return ctx.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
+				return ctx.Status(fh.StatusServiceUnavailable).JSON(fh.Map{
 					"ready": false,
 					"error": err.Error(),
 				})
 			}
 		}
-		return ctx.JSON(fiber.Map{"ready": true})
+		return ctx.JSON(fh.Map{"ready": true})
 	}
 }
 
@@ -144,7 +142,7 @@ func buildSSEHandler(
 	addClient func(*Client) error,
 	removeClient func(*Client),
 	opts HandlerOptions,
-) fiber.Handler {
+) fh.Handler {
 	logger := opts.Logger
 	if logger == nil {
 		logger = slog.Default()
@@ -160,7 +158,7 @@ func buildSSEHandler(
 	rateLimiter := newConnectRateLimiter(opts.MaxConnectsPerIP, opts.ConnectRateWindow)
 	streamErrLimiter := newLogRateLimiter(opts.StreamErrorLogInterval)
 
-	return func(ctx fiber.Ctx) error {
+	return func(ctx fh.Ctx) error {
 		origin := strings.TrimSpace(ctx.Get("Origin"))
 		clientIP := extractClientIP(ctx, opts)
 		if opts.RequireTLS && !isTLSRequest(ctx, opts.AllowLocalInsecure) {
@@ -168,7 +166,7 @@ func buildSSEHandler(
 			if opts.Metrics != nil {
 				opts.Metrics.TLSRejected.Add(1)
 			}
-			return ctx.Status(fiber.StatusUpgradeRequired).SendString(ErrTLSRequired.Error())
+			return ctx.Status(fh.StatusUpgradeRequired).SendString(ErrTLSRequired.Error())
 		}
 		if ok := isOriginAllowed(origin, ctx, opts, allowedOrigins, wildcardOrigin); !ok {
 			incrementRejected(opts.Metrics)
@@ -176,7 +174,7 @@ func buildSSEHandler(
 				opts.Metrics.OriginRejected.Add(1)
 			}
 			logger.Warn("sse connection rejected: origin not allowed", "origin", origin, "ip", clientIP)
-			return ctx.Status(fiber.StatusForbidden).SendString("origin not allowed")
+			return ctx.Status(fh.StatusForbidden).SendString("origin not allowed")
 		}
 
 		if !rateLimiter.Allow(clientIP) {
@@ -185,13 +183,13 @@ func buildSSEHandler(
 				opts.Metrics.ConnectRateRejected.Add(1)
 			}
 			logger.Warn("sse connection rejected: connect-rate limit reached", "ip", clientIP)
-			return ctx.Status(fiber.StatusTooManyRequests).SendString("connect rate limit exceeded")
+			return ctx.Status(fh.StatusTooManyRequests).SendString("connect rate limit exceeded")
 		}
 
 		if opts.RequireAuth && opts.Authenticate == nil {
 			incrementRejected(opts.Metrics)
 			logger.Error("sse handler misconfigured: RequireAuth=true without Authenticate hook")
-			return ctx.Status(fiber.StatusInternalServerError).SendString("sse auth misconfiguration")
+			return ctx.Status(fh.StatusInternalServerError).SendString("sse auth misconfiguration")
 		}
 
 		clientOpts := ClientOptions{
@@ -212,7 +210,7 @@ func buildSSEHandler(
 			if opts.Metrics != nil {
 				opts.Metrics.TopicLimitRejected.Add(1)
 			}
-			return ctx.Status(fiber.StatusBadRequest).SendString("topic limit exceeded")
+			return ctx.Status(fh.StatusBadRequest).SendString("topic limit exceeded")
 		}
 
 		authResult, authErr := runAuth(ctx, opts)
@@ -222,7 +220,7 @@ func buildSSEHandler(
 				opts.Metrics.AuthFailures.Add(1)
 			}
 			logger.Warn("sse connection rejected: authentication failed", "ip", clientIP, "error", authErr.Error())
-			return ctx.Status(fiber.StatusUnauthorized).SendString("unauthorized")
+			return ctx.Status(fh.StatusUnauthorized).SendString("unauthorized")
 		}
 		if authResult != nil {
 			if authResult.UserID != "" {
@@ -239,7 +237,7 @@ func buildSSEHandler(
 				opts.Metrics.IPLimitRejected.Add(1)
 			}
 			logger.Warn("sse connection rejected: per-ip limit reached", "ip", clientIP, "limit", opts.MaxConnectionsPerIP)
-			return ctx.Status(fiber.StatusTooManyRequests).SendString("too many active connections for this IP")
+			return ctx.Status(fh.StatusTooManyRequests).SendString("too many active connections for this IP")
 		}
 
 		client := NewClient(clientOpts)
@@ -249,12 +247,12 @@ func buildSSEHandler(
 			if opts.Metrics != nil && errors.Is(err, ErrHubDraining) {
 				opts.Metrics.DrainingRejected.Add(1)
 			}
-			status := fiber.StatusServiceUnavailable
+			status := fh.StatusServiceUnavailable
 			if errors.Is(err, ErrMaxClientsReached) || errors.Is(err, ErrHubDraining) {
-				status = fiber.StatusTooManyRequests
+				status = fh.StatusTooManyRequests
 			}
 			if errors.Is(err, ErrInvalidTopic) {
-				status = fiber.StatusBadRequest
+				status = fh.StatusBadRequest
 			}
 			logger.Warn("sse connection rejected: unable to register client",
 				"client_id", client.ID, "user_id", client.UserID, "ip", clientIP, "error", err.Error())
@@ -268,7 +266,7 @@ func buildSSEHandler(
 				incrementRejected(opts.Metrics)
 				logger.Warn("sse connection rejected by OnConnect hook",
 					"client_id", client.ID, "user_id", client.UserID, "ip", clientIP, "error", err.Error())
-				return ctx.Status(fiber.StatusForbidden).SendString(err.Error())
+				return ctx.Status(fh.StatusForbidden).SendString(err.Error())
 			}
 		}
 
@@ -298,7 +296,7 @@ func buildSSEHandler(
 		ctx.Set("Transfer-Encoding", "chunked")
 		ctx.Set("X-Accel-Buffering", "no")
 
-		ctx.RequestCtx().SetBodyStreamWriter(fasthttp.StreamWriter(func(w *bufio.Writer) {
+		return ctx.Stream(func(w *fh.StreamWriter) error {
 			defer func() {
 				removeClient(client)
 				ipLimiter.Release(clientIP)
@@ -312,25 +310,23 @@ func buildSSEHandler(
 			}()
 
 			for event := range client.send {
+				var err error
 				if event.Type == "" && event.Data != "" {
-					if _, err := w.WriteString(event.Data); err != nil {
-						recordStreamError(opts.Metrics, logger, streamErrLimiter, client.ID, err)
-						return
-					}
+					_, err = w.Write([]byte(event.Data))
 				} else {
-					if _, err := w.Write(event.Encode()); err != nil {
-						recordStreamError(opts.Metrics, logger, streamErrLimiter, client.ID, err)
-						return
-					}
+					_, err = w.Write(event.Encode())
 				}
-				if err := w.Flush(); err != nil {
+				if err != nil {
 					recordStreamError(opts.Metrics, logger, streamErrLimiter, client.ID, err)
-					return
+					return err
+				}
+				if err = w.Flush(); err != nil {
+					recordStreamError(opts.Metrics, logger, streamErrLimiter, client.ID, err)
+					return err
 				}
 			}
-		}))
-
-		return nil
+			return nil
+		})
 	}
 }
 
@@ -343,7 +339,7 @@ func recordStreamError(metrics *HandlerMetrics, logger *slog.Logger, limiter *lo
 	}
 }
 
-func runAuth(ctx fiber.Ctx, opts HandlerOptions) (*AuthResult, error) {
+func runAuth(ctx fh.Ctx, opts HandlerOptions) (*AuthResult, error) {
 	if opts.Authenticate == nil {
 		if opts.RequireAuth {
 			return nil, ErrUnauthorized
@@ -366,7 +362,7 @@ func incrementRejected(metrics *HandlerMetrics) {
 	}
 }
 
-func extractClientIP(ctx fiber.Ctx, opts HandlerOptions) string {
+func extractClientIP(ctx fh.Ctx, opts HandlerOptions) string {
 	if opts.IPFromCtx != nil {
 		if ip := strings.TrimSpace(opts.IPFromCtx(ctx)); ip != "" {
 			return ip
@@ -395,7 +391,7 @@ func compileAllowedOrigins(origins []string) (map[string]struct{}, bool) {
 	return allowed, wildcard
 }
 
-func isOriginAllowed(origin string, ctx fiber.Ctx, opts HandlerOptions, allowedOrigins map[string]struct{}, wildcard bool) bool {
+func isOriginAllowed(origin string, ctx fh.Ctx, opts HandlerOptions, allowedOrigins map[string]struct{}, wildcard bool) bool {
 	policyEnabled := wildcard || len(allowedOrigins) > 0 || opts.OriginValidator != nil
 	if !policyEnabled {
 		return true
@@ -422,15 +418,15 @@ func normalizeOrigin(origin string) string {
 	return strings.ToLower(strings.TrimSpace(origin))
 }
 
-func isTLSRequest(ctx fiber.Ctx, allowLocalInsecure bool) bool {
-	return isTLSRequestValues(ctx.Protocol(), ctx.Get("X-Forwarded-Proto"), ctx.IP(), allowLocalInsecure)
+func isTLSRequest(ctx fh.Ctx, allowLocalInsecure bool) bool {
+	return isTLSRequestValues(ctx.Get("X-Forwarded-Proto"), ctx.Get("X-Forwarded-Ssl"), ctx.IP(), allowLocalInsecure)
 }
 
-func isTLSRequestValues(protocol, forwardedProto, ip string, allowLocalInsecure bool) bool {
-	if strings.EqualFold(protocol, "https") {
+func isTLSRequestValues(forwardedProto, forwardedSsl, ip string, allowLocalInsecure bool) bool {
+	if strings.EqualFold(forwardedProto, "https") {
 		return true
 	}
-	if strings.EqualFold(forwardedProto, "https") {
+	if strings.EqualFold(forwardedSsl, "on") {
 		return true
 	}
 	if !allowLocalInsecure {

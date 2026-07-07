@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/gofiber/fiber/v3"
+	"github.com/oarkflow/fh"
 )
 
 // MetricsText returns a Prometheus-compatible text exposition payload.
@@ -62,9 +62,9 @@ func MetricsText(hub *Hub, handlerMetrics *HandlerMetrics) string {
 }
 
 // MetricsHandler exposes hub and handler metrics as Prometheus text format.
-func MetricsHandler(hub *Hub, handlerMetrics *HandlerMetrics) fiber.Handler {
-	return func(ctx fiber.Ctx) error {
-		ctx.Set(fiber.HeaderContentType, "text/plain; version=0.0.4; charset=utf-8")
+func MetricsHandler(hub *Hub, handlerMetrics *HandlerMetrics) fh.Handler {
+	return func(ctx fh.Ctx) error {
+		ctx.Set(fh.HeaderContentTypeStr, "text/plain; version=0.0.4; charset=utf-8")
 		return ctx.SendString(MetricsText(hub, handlerMetrics))
 	}
 }
