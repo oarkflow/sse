@@ -1,2 +1,10 @@
 github.com/oarkflow/fh v0.0.12 h1:5W8zy6/RzPx7y/vrq4G1KdXSNrtfcldXX5XJNSnrkkc=
 github.com/oarkflow/fh v0.0.12/go.mod h1:QEwj0yecHRKBp8aF4VoWIOLFRLtZU9MOJ/ja79UNtOY=
+github.com/oarkflow/fh v0.0.20 h1:IAJ4yZ7Pjuze3OSxpEN5aB5hzJ5J8PDwKb4OtzhRZ8k=
+github.com/oarkflow/fh v0.0.20/go.mod h1:9IzK3V0GpQ2MbJ3sElYKyOXwOzEhpP1RvGPPBWu4rPI=
+golang.org/x/crypto v0.55.0 h1:+KWHjbgOaAQ66dh/YlkZKHlz9ZUlq61AFirAR9ntP8M=
+golang.org/x/crypto v0.55.0/go.mod h1:uq0V9dE/fzQuJtbnL+2EhWOE63vo164FY8xqEnV9xis=
+golang.org/x/net v0.58.0 h1:ynWG7rqYi4ccpTEuPZ2QGWHktVEM9DMCj9yzDE0Q7To=
+golang.org/x/net v0.58.0/go.mod h1:YwCddHnFlT7eLQqVprV19OnhLGtc5xOKgE0RyqgfWAU=
+golang.org/x/text v0.41.0 h1:vz/seA0lnX87Othu2f/0L24RcgrXD9/YFTSuGjj3rH8=
+golang.org/x/text v0.41.0/go.mod h1:jvf1O8ajNzZqhSrQBPbutR/EB83Cc0CFrezNQIwbb5M=

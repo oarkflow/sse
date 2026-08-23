@@ -5,7 +5,6 @@ import (
 	"github.com/oarkflow/fh/mw/static"
 )
 
-
 func main() {
 	app := fiber.New()
 

@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Simple SSE Client</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+        }
+        h1 {
+            color: #333;
+            margin-bottom: 20px;
+        }
+        .status {
+            padding: 10px;
+            border-radius: 4px;
+            margin-bottom: 20px;
+            font-weight: bold;
+        }
+        .connected {
+            background-color: #d4edda;
+            color: #155724;
+        }
+        .disconnected {
+            background-color: #f8d7da;
+            color: #721c24;
+        }
+        .event-log {
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            padding: 10px;
+            height: 300px;
+            overflow-y: auto;
+            margin-bottom: 20px;
+        }
+        .event-entry {
+            padding: 8px;
+            margin-bottom: 5px;
+            background-color: #f8f9fa;
+            border-radius: 4px;
+            font-family: monospace;
+            font-size: 14px;
+        }
+        .event-type {
+            color: #007bff;
+            font-weight: bold;
+        }
+        .event-data {
+            color: #28a745;
+        }
+        .controls {
+            margin-bottom: 20px;
+        }
+        button {
+            padding: 10px 15px;
+            margin-right: 10px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        .btn-connect {
+            background-color: #28a745;
+            color: white;
+        }
+        .btn-disconnect {
+            background-color: #dc3545;
+            color: white;
+        }
+        .btn-send {
+            background-color: #007bff;
+            color: white;
+        }
+        input {
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 14px;
+            margin-right: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Simple SSE Client</h1>
+
+        <div class="status disconnected" id="status">Disconnected</div>
+
+        <div class="controls">
+            <button class="btn-connect" onclick="connect()">Connect</button>
+            <button class="btn-disconnect" onclick="disconnect()" disabled>Disconnect</button>
+        </div>
+
+        <div class="controls">
+            <input type="text" id="messageInput" placeholder="Enter message to send">
+            <button class="btn-send" onclick="sendMessage()">Send to All</button>
+        </div>
+
+        <div class="event-log" id="eventLog">
+            <div class="event-entry">Waiting for events...</div>
+        </div>
+    </div>
+
+    <script>
+        let eventSource = null;
+        const statusDiv = document.getElementById('status');
+        const eventLog = document.getElementById('eventLog');
+        const connectBtn = document.querySelector('.btn-connect');
+        const disconnectBtn = document.querySelector('.btn-disconnect');
+        const messageInput = document.getElementById('messageInput');
+
+        function connect() {
+            // Create EventSource connection
+            eventSource = new EventSource('http://localhost:3000/events');
+
+            // Connection open handler
+            eventSource.onopen = () => {
+                statusDiv.textContent = 'Connected';
+                statusDiv.className = 'status connected';
+                connectBtn.disabled = true;
+                disconnectBtn.disabled = false;
+                addEvent('system', 'Connected to SSE server');
+            };
+
+            // Message handler (default event type)
+            eventSource.onmessage = (event) => {
+                addEvent('message', event.data);
+            };
+
+            // Custom event handlers
+            eventSource.addEventListener('periodic', (event) => {
+                addEvent('periodic', event.data);
+            });
+
+            // Error handler
+            eventSource.onerror = () => {
+                statusDiv.textContent = 'Disconnected';
+                statusDiv.className = 'status disconnected';
+                connectBtn.disabled = false;
+                disconnectBtn.disabled = true;
+                addEvent('system', 'Connection error');
+            };
+        }
+
+        function disconnect() {
+            if (eventSource) {
+                eventSource.close();
+                eventSource = null;
+                statusDiv.textContent = 'Disconnected';
+                statusDiv.className = 'status disconnected';
+                connectBtn.disabled = false;
+                disconnectBtn.disabled = true;
+                addEvent('system', 'Disconnected from SSE server');
+            }
+        }
+
+        async function sendMessage() {
+            const message = messageInput.value.trim();
+            if (!message) return;
+
+            try {
+                const response = await fetch('http://localhost:3000/broadcast', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'text/plain',
+                    },
+                    body: message,
+                });
+
+                if (response.ok) {
+                    messageInput.value = '';
+                    addEvent('system', 'Message sent successfully');
+                } else {
+                    addEvent('system', 'Error sending message');
+                }
+            } catch (error) {
+                addEvent('system', 'Error sending message: ' + error.message);
+            }
+        }
+
+        function addEvent(type, data) {
+            const entry = document.createElement('div');
+            entry.className = 'event-entry';
+
+            const timestamp = new Date().toISOString().split('T')[1].split('.')[0];
+            entry.innerHTML = `<span class="event-type">[${timestamp}] ${type}:</span> <span class="event-data">${escapeHtml(data)}</span>`;
+
+            // Clear "waiting" message on first event
+            if (eventLog.children.length === 1 && eventLog.children[0].textContent.includes('Waiting for events')) {
+                eventLog.innerHTML = '';
+            }
+
+            eventLog.appendChild(entry);
+            eventLog.scrollTop = eventLog.scrollHeight;
+        }
+
+        function escapeHtml(text) {
+            const map = {
+                '&': '&',
+                '<': '<',
+                '>': '>',
+                '"': '"',
+                "'": '&#039;'
+            };
+            return text.replace(/[&<>"]/g, function(m) { return map[m]; });
+        }
+
+        // Allow pressing Enter to send message
+        messageInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                sendMessage();
+            }
+        });
+    </script>
+</body>
+</html>

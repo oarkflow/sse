@@ -482,12 +482,42 @@ var (
 
 ## Examples
 
-See the [`examples/`](examples/) directory:
+See the [`examples/`](examples/) directory for complete, ready-to-run implementations:
 
+### Simple Example
+- [`examples/simple-server/`](examples/simple-server/main.go) - Minimal server implementation
+- [`examples/simple-client/`](examples/simple-client/index.html) - Basic HTML client with UI
+
+### Advanced Example
 - [`examples/server/`](examples/server/main.go) - Full-featured server with authentication, rate limiting, and management endpoints
 - [`examples/client/`](examples/client/main.go) - Static file server for the demo client
-- [`examples/client/views/`](examples/client/views/index.html) - Interactive demo UI
+- [`examples/client/views/`](examples/client/views/index.html) - Interactive demo UI with all features
 - [`examples/client/views/resilient-sse-client.js`](examples/client/views/resilient-sse-client.js) - Reconnection logic with exponential backoff
+
+### Running Examples
+
+#### Simple Example:
+```bash
+# Start server (terminal 1)
+cd examples/simple-server
+go run main.go
+
+# Open client (terminal 2 or browser)
+open examples/simple-client/index.html
+```
+
+#### Advanced Example:
+```bash
+# Start server (terminal 1)
+cd examples/server
+go run main.go
+
+# Start client server (terminal 2)
+cd examples/client
+go run main.go
+
+# Open browser to http://localhost:8090
+```
 
 ## Testing
 
