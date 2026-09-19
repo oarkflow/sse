@@ -51,6 +51,7 @@
 package sse
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"sync"
@@ -89,6 +90,9 @@ type Hub struct {
 	replayedEvents      atomic.Uint64
 	replayMisses        atomic.Uint64
 	rejectedEvents      atomic.Uint64
+	busPublishedEvents  atomic.Uint64
+	busPublishErrors    atomic.Uint64
+	busDispatchedEvents atomic.Uint64
 
 	slowLogLimiter *logRateLimiter
 }
@@ -170,6 +174,15 @@ type HubOptions struct {
 
 	// Logger is used for slow-consumer and authorization-denial logs.
 	Logger *slog.Logger
+
+	// Bus optionally fans out Broadcast/Send/SendToGroup/BroadcastExcept
+	// calls to other instances for multi-node deployments (e.g. RedisBus).
+	// If nil, delivery is local-only (single-instance).
+	Bus Bus
+
+	// BusPublishTimeout bounds how long a publish to Bus may block the
+	// calling goroutine. Default: 5s.
+	BusPublishTimeout time.Duration
 }
 
 func defaultOptions(o HubOptions) HubOptions {
@@ -207,6 +220,9 @@ func defaultOptions(o HubOptions) HubOptions {
 	}
 	if o.MaxGroupLength == 0 {
 		o.MaxGroupLength = 128
+	}
+	if o.BusPublishTimeout == 0 {
+		o.BusPublishTimeout = 5 * time.Second
 	}
 	return o
 }
@@ -483,57 +499,51 @@ func (h *Hub) replaySticky(c *Client) {
 	}
 }
 
-// Broadcast sends an event to every connected client.
+// Broadcast sends an event to every connected client on this instance and,
+// if a Bus is configured, fans it out to other instances too.
 func (h *Hub) Broadcast(e *Event) {
 	if err := h.validateEvent(e); err != nil {
 		h.rejectedEvents.Add(1)
 		return
 	}
-	if err := h.authorizePublish(PublishContext{Target: PublishTargetBroadcast}, e); err != nil {
+	ctx := PublishContext{Target: PublishTargetBroadcast}
+	if err := h.authorizePublish(ctx, e); err != nil {
 		h.rejectedEvents.Add(1)
 		h.logPublishDenied(PublishTargetBroadcast, "", err)
 		return
 	}
 	h.persistSticky(e)
 	h.persistReplay(e)
-	h.mu.RLock()
-	clients := make([]*Client, 0, len(h.clients))
-	for _, c := range h.clients {
-		clients = append(clients, c)
-	}
-	h.mu.RUnlock()
-	for _, c := range clients {
-		h.deliver(c, e)
-	}
+	h.broadcastLocal(e, nil)
+	h.publishToBus(ctx, e)
 }
 
-// Send delivers an event to a single client identified by clientID.
-// Returns ErrClientNotFound if the client is not connected.
+// Send delivers an event to a single client identified by clientID and,
+// if a Bus is configured, fans it out to other instances too.
+// Returns ErrClientNotFound if the client is not connected locally; the
+// event is still published to the Bus so other instances can attempt delivery.
 func (h *Hub) Send(clientID string, e *Event) error {
 	if err := h.validateEvent(e); err != nil {
 		h.rejectedEvents.Add(1)
 		return err
 	}
-	if err := h.authorizePublish(PublishContext{
-		Target:   PublishTargetClient,
-		ClientID: clientID,
-	}, e); err != nil {
+	ctx := PublishContext{Target: PublishTargetClient, ClientID: clientID}
+	if err := h.authorizePublish(ctx, e); err != nil {
 		h.rejectedEvents.Add(1)
 		h.logPublishDenied(PublishTargetClient, clientID, err)
 		return err
 	}
 	h.persistReplay(e)
-	h.mu.RLock()
-	c, ok := h.clients[clientID]
-	h.mu.RUnlock()
-	if !ok {
+	found := h.sendLocal(clientID, e)
+	h.publishToBus(ctx, e)
+	if !found {
 		return ErrClientNotFound
 	}
-	h.deliver(c, e)
 	return nil
 }
 
-// SendToGroup delivers an event to all members of a named group.
+// SendToGroup delivers an event to all members of a named group and,
+// if a Bus is configured, fans it out to other instances too.
 func (h *Hub) SendToGroup(group string, e *Event) {
 	if err := h.validateGroup(group); err != nil {
 		h.rejectedEvents.Add(1)
@@ -543,16 +553,79 @@ func (h *Hub) SendToGroup(group string, e *Event) {
 		h.rejectedEvents.Add(1)
 		return
 	}
-	if err := h.authorizePublish(PublishContext{
-		Target: PublishTargetGroup,
-		Group:  group,
-	}, e); err != nil {
+	ctx := PublishContext{Target: PublishTargetGroup, Group: group}
+	if err := h.authorizePublish(ctx, e); err != nil {
 		h.rejectedEvents.Add(1)
 		h.logPublishDenied(PublishTargetGroup, group, err)
 		return
 	}
 	h.persistSticky(e)
 	h.persistReplay(e)
+	h.sendToGroupLocal(group, e)
+	h.publishToBus(ctx, e)
+}
+
+// BroadcastExcept sends to all clients except the ones listed and,
+// if a Bus is configured, fans it out to other instances too.
+func (h *Hub) BroadcastExcept(e *Event, excludeIDs ...string) {
+	if err := h.validateEvent(e); err != nil {
+		h.rejectedEvents.Add(1)
+		return
+	}
+	ctx := PublishContext{Target: PublishTargetBroadcastExcept, ExcludeIDs: append([]string(nil), excludeIDs...)}
+	if err := h.authorizePublish(ctx, e); err != nil {
+		h.rejectedEvents.Add(1)
+		h.logPublishDenied(PublishTargetBroadcastExcept, "", err)
+		return
+	}
+	h.persistSticky(e)
+	h.persistReplay(e)
+	h.broadcastLocal(e, excludeIDs)
+	h.publishToBus(ctx, e)
+}
+
+// broadcastLocal fans an event out to every locally connected client,
+// optionally excluding a set of client IDs. It performs no validation,
+// authorization, persistence, or Bus publishing.
+func (h *Hub) broadcastLocal(e *Event, excludeIDs []string) {
+	h.mu.RLock()
+	clients := make([]*Client, 0, len(h.clients))
+	if len(excludeIDs) == 0 {
+		for _, c := range h.clients {
+			clients = append(clients, c)
+		}
+	} else {
+		excluded := make(map[string]bool, len(excludeIDs))
+		for _, id := range excludeIDs {
+			excluded[id] = true
+		}
+		for id, c := range h.clients {
+			if !excluded[id] {
+				clients = append(clients, c)
+			}
+		}
+	}
+	h.mu.RUnlock()
+	for _, c := range clients {
+		h.deliver(c, e)
+	}
+}
+
+// sendLocal delivers an event to a single locally connected client.
+// It reports whether the client was found on this instance.
+func (h *Hub) sendLocal(clientID string, e *Event) bool {
+	h.mu.RLock()
+	c, ok := h.clients[clientID]
+	h.mu.RUnlock()
+	if !ok {
+		return false
+	}
+	h.deliver(c, e)
+	return true
+}
+
+// sendToGroupLocal delivers an event to all locally connected members of a group.
+func (h *Hub) sendToGroupLocal(group string, e *Event) {
 	h.mu.RLock()
 	members := h.groups[group]
 	clients := make([]*Client, 0, len(members))
@@ -562,42 +635,47 @@ func (h *Hub) SendToGroup(group string, e *Event) {
 		}
 	}
 	h.mu.RUnlock()
-
 	for _, c := range clients {
 		h.deliver(c, e)
 	}
 }
 
-// BroadcastExcept sends to all clients except the ones listed.
-func (h *Hub) BroadcastExcept(e *Event, excludeIDs ...string) {
-	if err := h.validateEvent(e); err != nil {
-		h.rejectedEvents.Add(1)
+// publishToBus fans an already-authorized publish out to other instances
+// via the configured Bus. Errors are logged, not returned, so a Bus outage
+// never blocks local delivery.
+func (h *Hub) publishToBus(ctx PublishContext, e *Event) {
+	if h.opts.Bus == nil {
 		return
 	}
-	if err := h.authorizePublish(PublishContext{
-		Target:     PublishTargetBroadcastExcept,
-		ExcludeIDs: append([]string(nil), excludeIDs...),
-	}, e); err != nil {
-		h.rejectedEvents.Add(1)
-		h.logPublishDenied(PublishTargetBroadcastExcept, "", err)
-		return
-	}
-	excluded := make(map[string]bool, len(excludeIDs))
-	for _, id := range excludeIDs {
-		excluded[id] = true
-	}
-	h.persistSticky(e)
-	h.persistReplay(e)
-	h.mu.RLock()
-	clients := make([]*Client, 0, len(h.clients))
-	for id, c := range h.clients {
-		if !excluded[id] {
-			clients = append(clients, c)
+	busCtx, cancel := context.WithTimeout(context.Background(), h.opts.BusPublishTimeout)
+	defer cancel()
+	if err := h.opts.Bus.Publish(busCtx, ctx, e); err != nil {
+		h.busPublishErrors.Add(1)
+		if h.opts.Logger != nil {
+			h.opts.Logger.Warn("sse bus publish failed", "target", ctx.Target, "error", err.Error())
 		}
+		return
 	}
-	h.mu.RUnlock()
-	for _, c := range clients {
-		h.deliver(c, e)
+	h.busPublishedEvents.Add(1)
+}
+
+// DispatchRemote delivers an event that originated on another instance to
+// locally connected clients only. It implements Dispatcher and is called by
+// a Bus subscriber; it must never re-publish to the Bus.
+func (h *Hub) DispatchRemote(ctx PublishContext, e *Event) {
+	if e == nil {
+		return
+	}
+	h.busDispatchedEvents.Add(1)
+	switch ctx.Target {
+	case PublishTargetBroadcast:
+		h.broadcastLocal(e, nil)
+	case PublishTargetClient:
+		h.sendLocal(ctx.ClientID, e)
+	case PublishTargetGroup:
+		h.sendToGroupLocal(ctx.Group, e)
+	case PublishTargetBroadcastExcept:
+		h.broadcastLocal(e, ctx.ExcludeIDs)
 	}
 }
 
@@ -815,6 +893,17 @@ type Stats struct {
 
 	// RejectedEvents is the count of events rejected due to validation failures.
 	RejectedEvents uint64
+
+	// BusPublishedEvents is the count of events successfully fanned out to
+	// other instances via the configured Bus.
+	BusPublishedEvents uint64
+
+	// BusPublishErrors is the count of Bus publish attempts that failed.
+	BusPublishErrors uint64
+
+	// BusDispatchedEvents is the count of events received from other
+	// instances via the Bus and delivered to local clients.
+	BusDispatchedEvents uint64
 }
 
 // Stats returns a snapshot of current hub metrics including connection counts,
@@ -839,6 +928,9 @@ func (h *Hub) Stats() Stats {
 		ReplayedEvents:      h.replayedEvents.Load(),
 		ReplayMisses:        h.replayMisses.Load(),
 		RejectedEvents:      h.rejectedEvents.Load(),
+		BusPublishedEvents:  h.busPublishedEvents.Load(),
+		BusPublishErrors:    h.busPublishErrors.Load(),
+		BusDispatchedEvents: h.busDispatchedEvents.Load(),
 	}
 }
 

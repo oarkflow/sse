@@ -23,6 +23,19 @@ A robust, production-ready Server-Sent Events (SSE) implementation for the [GoFi
 go get github.com/oarkflow/sse
 ```
 
+The core module depends only on [`fh`](https://github.com/oarkflow/fh); it
+pulls in no Redis, NATS, or OpenTelemetry client. Distributed-deployment
+adapters live in separate `contrib` modules with their own `go.mod` (see
+[`contrib/redis`](contrib/redis), [`contrib/nats`](contrib/nats), and
+[`contrib/otel`](contrib/otel)), so you only pay for the dependencies you
+actually use:
+
+```bash
+go get github.com/oarkflow/sse/contrib/redis   # RedisBus, RedisReplayStore, RedisPresenceStore, RedisConnectionLimiter
+go get github.com/oarkflow/sse/contrib/nats    # NatsBus (durable, at-least-once fanout via JetStream)
+go get github.com/oarkflow/sse/contrib/otel    # RegisterOTelMetrics
+```
+
 ## Quick Start
 
 ### Server Setup
@@ -343,9 +356,13 @@ app.Get("/metrics", sse.MetricsHandler(hub, handlerMetrics))
 
 ### OpenTelemetry Metrics
 
+Requires the `contrib/otel` module (`go get github.com/oarkflow/sse/contrib/otel`):
+
 ```go
+import sseotel "github.com/oarkflow/sse/contrib/otel"
+
 meter := otel.Meter("your-service")
-unregister, err := sse.RegisterOTelMetrics(meter, hub, handlerMetrics)
+unregister, err := sseotel.RegisterOTelMetrics(meter, hub, handlerMetrics)
 if err != nil {
     panic(err)
 }
@@ -367,61 +384,103 @@ app.Get("/readyz", sse.ReadinessHandler(hub, func() error {
 
 ## Custom Replay Store
 
-Implement `ReplayStore` for persistent or distributed replay:
+`ReplayStore` is a two-method interface — implement it yourself for any
+persistent or distributed backend, or use the reference Redis
+implementation shipped in `contrib/redis` (`go get github.com/oarkflow/sse/contrib/redis`):
 
 ```go
-type RedisReplayStore struct {
-    client *redis.Client
-    prefix string
-    max    int
-}
+import sseredis "github.com/oarkflow/sse/contrib/redis"
 
-func (s *RedisReplayStore) Append(event *sse.Event) {
-    // Store event in Redis
-}
+redisClient := redis.NewClient(&redis.Options{Addr: "localhost:6379"})
+store := sseredis.NewRedisReplayStore(redisClient, sseredis.RedisReplayStoreOptions{
+    Prefix:    "sse:replay:",
+    MaxEvents: 10000,
+    TTL:       24 * time.Hour,
+})
 
-func (s *RedisReplayStore) ReplayAfter(lastEventID string, topics map[string]bool, limit int) []*sse.Event {
-    // Retrieve events after lastEventID
-}
-
-// Use with hub
 hub := sse.NewHub(sse.HubOptions{
-    ReplayStore: &RedisReplayStore{...},
+    ReplayStore: store,
 })
 ```
 
-## Distributed Publish Fanout (Redis Pub/Sub)
+## Distributed Publish Fanout (Bus)
+
+Wire a `Bus` into `HubOptions.Bus` and every `Broadcast` / `Send` /
+`SendToGroup` / `BroadcastExcept` (and `UserHub.SendToUser`) call
+automatically fans out to every other instance subscribed to the same
+channel — no need to call `bus.Publish` yourself. Two reference `Bus`
+implementations ship as separate `contrib` modules, with the same trade-off
+you'd expect from their transports:
+
+| | `contrib/redis`'s `RedisBus` | `contrib/nats`'s `NatsBus` |
+| --- | --- | --- |
+| Transport | Redis Pub/Sub | NATS JetStream |
+| Delivery guarantee | At-most-once — a message published while a subscriber is disconnected, or lost mid-flight, is gone | At-least-once — messages persist in a stream; each instance's durable consumer explicitly acks, and unacked messages are redelivered |
+| Setup cost | Lower — no stream/consumer config | Slightly higher — needs a JetStream-enabled NATS server |
+| When to reach for it | You're fine with occasional dropped fanout messages (typical for SSE, since clients reconnect and replay via `ReplayStore` anyway) and want the simplest option | You need every instance to reliably see every published event even across brief network blips |
+
+### Redis Pub/Sub
 
 ```go
+import sseredis "github.com/oarkflow/sse/contrib/redis"
+
 redisClient := redis.NewClient(&redis.Options{Addr: "localhost:6379"})
-bus := sse.NewRedisBus(redisClient, sse.RedisBusOptions{
+bus := sseredis.NewRedisBus(redisClient, sseredis.RedisBusOptions{
     Channel: "sse:bus",
     Logger:  slog.Default(),
 })
 
-// Subscribe in background on each node
+hub := sse.NewHub(sse.HubOptions{
+    Bus: bus, // Broadcast/Send/SendToGroup/BroadcastExcept now fan out via Redis
+})
+
+// Subscribe in background on each node so remote publishes reach this
+// instance's local clients too.
+go func() {
+    _ = bus.Subscribe(context.Background(), hub) // pass a *UserHub here to also cover SendToUser
+}()
+
+// A plain call now reaches clients on every instance, not just this one.
+hub.Broadcast(sse.NewEvent("notice", "multi-node fanout"))
+```
+
+### NATS JetStream (durable, at-least-once)
+
+```go
+import ssenats "github.com/oarkflow/sse/contrib/nats"
+
+nc, _ := nats.Connect("nats://localhost:4222")
+bus, err := ssenats.NewNatsBus(context.Background(), nc, ssenats.NatsBusOptions{
+    Subject:    "sse.bus",
+    InstanceID: "instance-1", // stable per instance so restarts resume, not reset
+})
+if err != nil {
+    panic(err)
+}
+
+hub := sse.NewHub(sse.HubOptions{Bus: bus})
+
 go func() {
     _ = bus.Subscribe(context.Background(), hub)
 }()
 
-// Publish to all nodes
-_ = bus.Publish(context.Background(), sse.PublishContext{
-    Target: sse.PublishTargetBroadcast,
-}, sse.NewEvent("notice", "multi-node fanout"))
+hub.Broadcast(sse.NewEvent("notice", "multi-node fanout, redelivered on crash"))
 ```
 
 ## Distributed Connection Limits and Presence (Redis)
 
 ```go
+import sseredis "github.com/oarkflow/sse/contrib/redis"
+
 redisClient := redis.NewClient(&redis.Options{Addr: "localhost:6379"})
 
-connLimiter := sse.NewRedisConnectionLimiter(redisClient, sse.RedisConnectionLimiterOptions{
+connLimiter := sseredis.NewRedisConnectionLimiter(redisClient, sseredis.RedisConnectionLimiterOptions{
     Prefix: "sse:conn:",
     Max:    50,              // max active connections per IP
     TTL:    time.Minute,
 })
 
-presence := sse.NewRedisPresenceStore(redisClient, sse.RedisPresenceStoreOptions{
+presence := sseredis.NewRedisPresenceStore(redisClient, sseredis.RedisPresenceStoreOptions{
     Prefix: "sse:presence:",
     TTL:    10 * time.Minute,
 })
@@ -539,8 +598,8 @@ go test -bench=. ./...
 The default in-memory implementations don't support multi-instance deployments. For horizontal scaling:
 
 1. Use sticky sessions (layer 4 load balancing)
-2. Use `RedisReplayStore` for replay persistence
-3. Use `RedisBus` for cross-instance publish fanout
+2. Use `sseredis.RedisReplayStore` (`contrib/redis`) for replay persistence
+3. Wire a `Bus` into `HubOptions.Bus` for cross-instance publish fanout: `sseredis.RedisBus` (`contrib/redis`) for the simplest setup, or `ssenats.NatsBus` (`contrib/nats`) if you need at-least-once delivery across brief instance/network blips
 
 ### Memory Management
 
@@ -566,7 +625,7 @@ The default in-memory implementations don't support multi-instance deployments. 
 - [ ] `BackpressurePolicy` selected and `MaxDropsPerClient` set for abusive/slow clients.
 - [ ] `OnLifecycle` hook wired to logs/metrics for drain and stop visibility.
 - [ ] `/healthz`, `/readyz`, and `/metrics` endpoints integrated with your platform.
-- [ ] Replay and fanout strategy selected for multi-instance deployments (`RedisReplayStore` + `RedisBus`).
+- [ ] Replay and fanout strategy selected for multi-instance deployments (`contrib/redis`'s `RedisReplayStore` + `RedisBus`, or `contrib/nats`'s `NatsBus` for at-least-once fanout).
 
 ## API Reference
 

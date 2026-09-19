@@ -13,6 +13,7 @@ const (
 	PublishTargetClient          PublishTarget = "client"
 	PublishTargetGroup           PublishTarget = "group"
 	PublishTargetBroadcastExcept PublishTarget = "broadcast_except"
+	PublishTargetUser            PublishTarget = "user"
 )
 
 // PublishContext describes the publish destination for authorization checks.
@@ -21,6 +22,14 @@ type PublishContext struct {
 	ClientID   string
 	Group      string
 	ExcludeIDs []string
+	UserID     string
+}
+
+// Dispatcher receives events that originated on another instance (via a Bus)
+// and fans them out to locally connected clients only. Implementations must
+// not re-publish to the Bus, or messages would loop across instances forever.
+type Dispatcher interface {
+	DispatchRemote(ctx PublishContext, e *Event)
 }
 
 // HubLifecycleEventType describes hub lifecycle transitions.

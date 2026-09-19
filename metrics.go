@@ -19,6 +19,9 @@ func MetricsText(hub *Hub, handlerMetrics *HandlerMetrics) string {
 	b.WriteString("# TYPE sse_hub_replayed_events counter\n")
 	b.WriteString("# TYPE sse_hub_replay_misses counter\n")
 	b.WriteString("# TYPE sse_hub_rejected_events counter\n")
+	b.WriteString("# TYPE sse_hub_bus_published_events counter\n")
+	b.WriteString("# TYPE sse_hub_bus_publish_errors counter\n")
+	b.WriteString("# TYPE sse_hub_bus_dispatched_events counter\n")
 	b.WriteString("# TYPE sse_handler_total_connections counter\n")
 	b.WriteString("# TYPE sse_handler_active_connections gauge\n")
 	b.WriteString("# TYPE sse_handler_rejected_connections counter\n")
@@ -41,6 +44,9 @@ func MetricsText(hub *Hub, handlerMetrics *HandlerMetrics) string {
 		fmt.Fprintf(&b, "sse_hub_replayed_events %d\n", stats.ReplayedEvents)
 		fmt.Fprintf(&b, "sse_hub_replay_misses %d\n", stats.ReplayMisses)
 		fmt.Fprintf(&b, "sse_hub_rejected_events %d\n", stats.RejectedEvents)
+		fmt.Fprintf(&b, "sse_hub_bus_published_events %d\n", stats.BusPublishedEvents)
+		fmt.Fprintf(&b, "sse_hub_bus_publish_errors %d\n", stats.BusPublishErrors)
+		fmt.Fprintf(&b, "sse_hub_bus_dispatched_events %d\n", stats.BusDispatchedEvents)
 	}
 
 	if handlerMetrics != nil {

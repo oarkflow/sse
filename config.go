@@ -40,6 +40,9 @@ func ValidateHubOptions(opts HubOptions) error {
 	if opts.SlowConsumerLogInterval < 0 {
 		return fmt.Errorf("slow consumer log interval must be >= 0")
 	}
+	if opts.BusPublishTimeout < 0 {
+		return fmt.Errorf("bus publish timeout must be >= 0")
+	}
 	if opts.BackpressurePolicy != "" &&
 		opts.BackpressurePolicy != BackpressureDropNewest &&
 		opts.BackpressurePolicy != BackpressureDropOldest &&

@@ -62,8 +62,27 @@ func (u *UserHub) RemoveClient(c *Client) {
 	}
 }
 
-// SendToUser delivers an event to ALL connections belonging to userID.
+// SendToUser delivers an event to ALL connections belonging to userID on
+// this instance and, if a Bus is configured, fans it out so other instances
+// deliver to their own local connections for the same user.
 func (u *UserHub) SendToUser(userID string, e *Event) {
+	if err := u.Hub.validateEvent(e); err != nil {
+		u.Hub.rejectedEvents.Add(1)
+		return
+	}
+	ctx := PublishContext{Target: PublishTargetUser, UserID: userID}
+	if err := u.Hub.authorizePublish(ctx, e); err != nil {
+		u.Hub.rejectedEvents.Add(1)
+		u.Hub.logPublishDenied(PublishTargetUser, userID, err)
+		return
+	}
+	u.Hub.persistReplay(e)
+	u.sendToUserLocal(userID, e)
+	u.Hub.publishToBus(ctx, e)
+}
+
+// sendToUserLocal delivers an event to locally connected clients of userID only.
+func (u *UserHub) sendToUserLocal(userID string, e *Event) {
 	u.mu.RLock()
 	ids := make([]string, 0, len(u.users[userID]))
 	for id := range u.users[userID] {
@@ -72,8 +91,20 @@ func (u *UserHub) SendToUser(userID string, e *Event) {
 	u.mu.RUnlock()
 
 	for _, id := range ids {
-		_ = u.Hub.Send(id, e) // ignore not-found; client may have disconnected
+		u.Hub.sendLocal(id, e) // ignore not-found; client may have disconnected
 	}
+}
+
+// DispatchRemote implements Dispatcher. It handles user-targeted events
+// locally and delegates every other target to the embedded Hub, so a single
+// Bus subscription (go bus.Subscribe(ctx, userHub)) covers both.
+func (u *UserHub) DispatchRemote(ctx PublishContext, e *Event) {
+	if ctx.Target == PublishTargetUser {
+		u.Hub.busDispatchedEvents.Add(1)
+		u.sendToUserLocal(ctx.UserID, e)
+		return
+	}
+	u.Hub.DispatchRemote(ctx, e)
 }
 
 // OnlineUsers returns a snapshot of currently connected user IDs.

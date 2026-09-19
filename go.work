@@ -1,0 +1,8 @@
+go 1.27.0
+
+use (
+	.
+	./contrib/nats
+	./contrib/otel
+	./contrib/redis
+)
